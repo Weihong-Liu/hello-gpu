@@ -88,10 +88,15 @@ hipcc vector_add.hip -O2 -o vector_add && echo "compile_status: PASS"
 ```
 
 <details>
-<summary>🚧 待实测：vector add 运行结果</summary>
+<summary>输出：vector add 运行结果（9070XT）</summary>
 
 ```text
-（机器就绪后在此粘贴实际输出。预期 device_name 显示 9070XT，max_error: 0，status: PASS）
+device_name: AMD Radeon RX 9070 XT
+vector_size: 1048576
+blocks: 4096
+threads_per_block: 256
+max_error: 0
+status: PASS
 ```
 
 </details>
@@ -232,12 +237,27 @@ python benchmark_vector_add.py
 ```
 
 <details>
-<summary>🚧 待实测：Vector Add baseline benchmark @ 9070XT + ROCm 6.4.x</summary>
+<summary>输出：Vector Add baseline benchmark @ AMD Radeon RX 9070 XT + ROCm 7.13</summary>
 
 ```text
-（机器就绪后在此粘贴实际输出。预期会看到 torch、cuda_available、device_name、
-vector_size、warmup、repeat，以及 cpu/gpu 各自的 mean/median/min 延迟和带宽估算）
+torch: 2.11.0+rocm7.13.0
+cuda_available: True
+device_name: AMD Radeon RX 9070 XT
+vector_size: 16777216
+warmup: 5
+repeat: 30
+cpu_mean_ms: 9.570484
+cpu_median_ms: 9.507611
+cpu_min_ms: 7.828030
+cpu_bandwidth_gb_s_by_min: 25.718679
+gpu_mean_ms: 0.345777
+gpu_median_ms: 0.339655
+gpu_min_ms: 0.334954
+gpu_bandwidth_gb_s_by_min: 601.057446
+status: PASS
 ```
+
+GPU min 延迟 0.335 ms，估算有效带宽约 601 GB/s——比 CPU（25.7 GB/s）快约 23 倍。
 
 </details>
 
@@ -247,7 +267,7 @@ vector_size、warmup、repeat，以及 cpu/gpu 各自的 mean/median/min 延迟�
 bytes_moved = vector_size × 3 × 4
 ```
 
-> 🚧 跑出数字后，把 GPU 的带宽估算填到这里，并和下一节的 Roofline 上限对比。
+实测 GPU 估算有效带宽约 601 GB/s——下一节就拿它和 Roofline 上限对比。
 
 ## 3.4 Roofline 心智模型
 
@@ -274,13 +294,28 @@ bytes_moved = vector_size × 3 × 4
 | 项目 | 数值 |
 | ---- | ---- |
 | vector add 算术强度 | ~0.083 FLOP/Byte（memory-bound）|
-| 🚧 实测有效带宽 | 待 job 填充（9070XT）|
-| 🚧 理论峰值带宽 | ~760 GB/s（标称，以 micro-benchmark 实测为准）|
-| 🚧 带宽利用率 | 实测 / 理论 |
+| 实测有效带宽（vector add, 16M 元素 ≈ 64 MiB）| **~601 GB/s** |
+| GDDR6 实测带宽上限（copy, ≥1 GiB 平台，见 [第 2 章 §2.8](../chapter2/index.md)）| ~500 GB/s |
+| 标称带宽（理论峰值）| ~760 GB/s |
+| 带宽利用率（实测 / GDDR6 上限）| ~120%（高于 100%，见下文解释）|
 
-> 🚧 上表的数字需在 9070XT 实验机就绪后实测回填。填完后你能直观看到：vector add 这个最简单的算子，离硬件带宽上限有多远。通常 PyTorch elementwise 能跑到理论带宽的相当比例——因为它的访存模式非常友好（完全合并）。
+> vector add 实测有效带宽（601 GB/s）高于 GDDR6 实测上限（500 GB/s），看起来"超标"——原因不是测量错了，而是 16M 元素 ≈ 64 MiB 的工作集**部分落在 L2 命中区**，缓存复用拉高了有效带宽。[第 2 章 §2.8](../chapter2/index.md) 的带宽扫描里也能看到：64 MiB footprint 时 copy 带宽 561 GB/s，明显高于 1 GiB 时的 500 GB/s。这说明 vector add 在这个规模下没有真正卡在 GDDR6 上——这正是它的访存模式非常友好（完全合并、线性流式）的结果。要让带宽利用率回到 100% 以内，把输入规模推到 ≥1 GiB（远超 L2）再测即可。
 
-这个对比建立了一个重要的直觉：**判断一个算子优化得好不好，不是看绝对延迟，而是看它离 Roofline 上限有多远**。这个直觉会在整个 Part 1 profiling 篇反复用到——[第 6 章](../../part1-profiling/chapter6/index.md) 会把算子点正式画到 Roofline 曲线上。
+现在把这个实测点画到 Roofline 曲线上。横轴是算术强度（FLOP/Byte，对数轴），纵轴是实际性能（TFLOPS，对数轴）；两条硬件线来自 [第 2 章 §2.8](../chapter2/index.md) 的实测值（带宽 ~601 GB/s、fp32 算力 ~14.6 TFLOPS、fp16 算力 ~124 TFLOPS），vector add 点来自本节实测：
+
+::: figure fig-roofline-vadd
+![Roofline 曲线：vector add 实测点](./images/roofline-vector-add.png)
+
+vector add 的实测点（★）落在 Roofline 斜线最左下端——典型的 memory-bound。两条斜线分别是 vector add 实测带宽（601 GB/s）和 GDDR6 平台带宽（500 GB/s）；两条水平线是 fp32（14.6 TFLOPS，SIMD FMA）和 fp16（124 TFLOPS，WMMA）算力上限。图由 `code/part0-intro/chapter3/plot_roofline.py` 生成。
+:::
+
+读这张图能直接得到三个直觉：
+
+- **vector add 贴着斜线，远离两条水平线**——它是 memory-bound，算力（VALU/WMMA）完全没吃满，瓶颈在带宽。就算把 fp32 换成 fp16，算力线再高它也快不了多少，因为它压根没走到算力那一侧。
+- **它已经接近斜线本身**——说明 vector add 的访存效率很高（完全合并），优化空间已经不大；想再快只能提高算术强度（融合多个 elementwise 算子，让搬一次数据做更多 FLOP），把工作点**沿斜线往右上方推**，推过拐点后才会进入 compute-bound 区。
+- **两条水平线差距巨大（fp16 是 fp32 的 ~8.5 倍）**——但这个差距对 vector add 毫无意义，因为它在斜线那一侧。只有 GEMM / Attention 这种高算术强度算子（点落在水平线附近）才能吃到 WMMA 的红利——这是后面 [第 9 章 GEMM](../../part2-kernels/chapter9/index.md)、[第 10 章 Flash Attention](../../part2-kernels/chapter10/index.md) 反复要用的判断。
+
+这个对比建立了一个贯穿全书的核心直觉：**判断一个算子优化得好不好，不是看绝对延迟，而是看它离 Roofline 上限有多远、落在斜线还是水平线那一侧**。上面这张图就是这个直觉的可视化——你现在已经会画了。后续 Part 1 的 [第 5 章](../../part1-profiling/chapter5/index.md)、[第 6 章](../../part1-profiling/chapter6/index.md) 会用 profiling 工具解释"为什么这个点没贴满斜线"，Part 2 的每个算子都会在它自己的 Roofline 上画点。
 
 ## 3.5 留下实验底稿
 
@@ -315,10 +350,10 @@ python benchmark_vector_add.py
 
 | 项目 | 数值 |
 | ---- | ---- |
-| 硬件 | 🚧 9070XT + ROCm 6.4.x（待填）|
-| 输入规模 | 🚧 待填 |
-| GPU min 延迟 | 🚧 待填 |
-| GPU 估算带宽 | 🚧 待填 |
+| 硬件 | AMD Radeon RX 9070 XT（gfx1201）+ ROCm 7.13（WSL2）|
+| 输入规模 | 16,777,216 个 float32（≈ 64 MiB/数组）|
+| GPU min 延迟 | 0.335 ms |
+| GPU 估算带宽 | ~601 GB/s |
 | status | PASS |
 ````
 
