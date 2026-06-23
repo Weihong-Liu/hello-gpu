@@ -205,14 +205,14 @@ LDS 还有第二个性质：它不是一块纯线性内存，而是**分 bank** 
 | LDS | CU/WGP 内部 | 每 workgroup 最多 64 KB | 很高 | 很低 |
 | L0 / Vector L1 | CU 私有缓存 | 几十 KB | 高 | 低 |
 | L2 cache | 全局共享 | 几 MB | 中 | 中 |
-| GDDR6 显存 | 板载 | 16 GB | 🚧 待实测（标称 ~760 GB/s） | 高 |
+| GDDR6 显存 | 板载 | 16 GB | **~500 GB/s**（实测，标称 ~760）| 高 |
 
-> 🚧 上表中的带宽和延迟数字需在 9070XT 实验机就绪后用 micro-benchmark 实测回填。标称值仅作参考，实测可能不同。
+> 上表 GDDR6 带宽用大数组 copy micro-benchmark 实测（footprint ≥1 GiB，纯 GDDR6 平台，排除 L2 命中）。标称 ~760 GB/s 是理论峰值；实测 ~500 GB/s 是 copy kernel 能达到的稳态有效带宽，受内存事务效率、L2、内存控制器影响——后续所有 Roofline 计算以实测值为准。脚本见 `code/part0-intro/chapter2/micro_bench.py`，原始输出见本章末尾。
 
 几个对优化最关键的点：
 
 - **离 lane 越近越快**：寄存器 > LDS > L1 > L2 > GDDR6。优化的核心思路之一就是**让数据尽量待在离 lane 近的地方**——用寄存器复用、用 LDS 缓存 tile、用合并访存提升 cache 命中率。
-- **GDDR6 不是 HBM**：9070XT 的显存带宽（标称 ~760 GB/s）远低于 HBM 设备（动辄几 TB/s）。这意味着对 9070XT 来说，**memory-bound 算子的优化空间更大也更关键**——很多算子会卡在带宽上。
+- **GDDR6 不是 HBM**：9070XT 的显存带宽实测约 **500 GB/s**（标称 ~760 GB/s），远低于 HBM 设备（动辄几 TB/s）。这意味着对 9070XT 来说，**memory-bound 算子的优化空间更大也更关键**——很多算子会卡在带宽上。
 - **合并访存（Coalescing）**：连续的线程访问连续的地址时，硬件可以把多次访问合并成一次大事务，充分利用带宽。反之，strided 访问（线程访问间隔地址）会让带宽利用率大跌。这是第 5 章 profiling 会用 strided 反例演示的重点。
 
 ## 2.6 WMMA：RDNA4 的矩阵加速单元
@@ -285,10 +285,10 @@ Roofline 的两条线：左半边由带宽决定，右半边由算力决定
 
 两条线的硬件来源很具体：
 
-- **峰值算力 P_peak** 来自"每 CU / 每周期能做多少 FLOP × CU 数 × 时钟"。对 9070XT，这条线在"使能 WMMA"的前提下较高，不走 WMMA 时会大幅下降。
-- **峰值带宽 B_peak** 来自 GDDR6 显存。9070XT 标称 ~760 GB/s（**以实测为准**）。注意这个数字远低于 HBM 设备的几 TB/s——所以 9070XT 的 Roofline 拐点位置会和数据中心卡很不一样。
+- **峰值算力 P_peak** 来自"每 CU / 每周期能做多少 FLOP × CU 数 × 时钟"。对 9070XT，实测 `torch.matmul`（4096×4096）的峰值：**fp16（走 WMMA）约 124 TFLOPS、fp32（走 SIMD FMA）约 14.6 TFLOPS**。使能 WMMA 时这条线高得多，不走 WMMA 时会大幅下降。
+- **峰值带宽 B_peak** 来自 GDDR6 显存。9070XT 标称 ~760 GB/s，但**实测 copy 有效带宽约 500 GB/s**（footprint ≥1 GiB 平台）。注意这个数字远低于 HBM 设备的几 TB/s——所以 9070XT 的 Roofline 拐点位置会和数据中心卡很不一样。
 
-> 🚧 P_peak 和 B_peak 的具体数字需在 9070XT 实验机就绪后用 micro-benchmark 实测。标称值不作结论。
+> 上面这些 P_peak / B_peak 数字都用 `code/part0-intro/chapter2/micro_bench.py` 在 9070XT + ROCm 7.13（WSL2）上实测得到（见本章末尾输出）。标称值仅作上限参考，Roofline 计算一律用实测值。
 
 把这两条线画到同一张图上，每个 kernel 都会落在某一个点上。先用最简单的 Vector Add `c[i] = a[i] + b[i]` 走一遍"算术强度怎么从代码里算出来"：
 
@@ -320,12 +320,50 @@ Roofline 的两条线：左半边由带宽决定，右半边由算力决定
 
 后面 [第 3 章](../chapter3/index.md) 会用 vector add 跑通第一个程序，[第 6 章](../../part1-profiling/chapter6/index.md) 会把算子点画到真实 Roofline 上。
 
+## 2.8 实测：9070XT 的带宽与算力
+
+前面两节的 Roofline 数字不是拍脑袋来的，全部用 `code/part0-intro/chapter2/micro_bench.py` 在实验机（9070XT / gfx1201 / ROCm 7.13 / WSL2）上实测。完整输出如下，方便你对照复现：
+
+<details>
+<summary>输出：micro_bench.py @ AMD Radeon RX 9070 XT + ROCm 7.13</summary>
+
+```text
+============================================================
+GPU: AMD Radeon RX 9070 XT
+torch: 2.11.0+rocm7.13.0
+============================================================
+
+--- 显存带宽（大数组 copy，测 GDDR6 平台 B_peak）---
+   footprint |    min_ms |     GB/s
+--------------------------------------
+       64 MiB |   0.228 ms |   561.6
+      256 MiB |   0.951 ms |   538.2
+      512 MiB |   1.961 ms |   522.2
+     1024 MiB |   4.102 ms |   499.2
+     2048 MiB |   8.222 ms |   498.2
+
+--- 峰值算力（torch.matmul 4096x4096，测 P_peak）---
+   dtype |    min_ms |     TFLOPS
+--------------------------------
+    fp16 |   1.107 ms |   124.1
+    fp32 |   9.414 ms |    14.6
+```
+
+</details>
+
+读这张表的几个要点：
+
+- **带宽随 footprint 增大先升后稳**：64 MiB 时 561.6 GB/s（部分 L2 命中拉高），到 1024 MiB 后稳定在 ~498–499 GB/s（纯 GDDR6 平台，L2 已被打穿）。**B_peak 取稳态值约 500 GB/s**，不取 L2 命中虚高的那个。
+- **实测 ≈ 标称的 66%**：标称 ~760 GB/s 是理论峰值，实测 ~500 GB/s 是 copy kernel 的有效带宽。这个差距是正常的（事务开销、L2、内存控制器），后续算 Roofline 一律用实测 500 GB/s，不用标称。
+- **fp16 算力是 fp32 的 ~8.5 倍**：fp16（124.1 TFLOPS）走 WMMA 矩阵单元，fp32（14.6 TFLOPS）走 SIMD FMA。这就是为什么后面 GEMM / Attention 章会反复强调"用 WMMA"——它能把手头算力提高近一个数量级。
+- **拐点算术强度 ≈ P_peak / B_peak**：fp16 下拐点约 124/0.5 ≈ 248 FLOP/Byte，fp32 下约 14.6/0.5 ≈ 29 FLOP/Byte。一个算子的算术强度超过这个拐点才算 compute-bound，否则就是 memory-bound——Vector Add（0.083）远在拐点左侧。
+
 ## 本章小结
 
 - **CU 内部不是黑盒**：SIMD（VALU + SALU）、寄存器堆、LDS、L0 缓存各司其职；RDNA 还在 CU 之上多了一层 WGP，WGP 内 4 条 SIMD32 共享 LDS。
 - **wave 是 GPU 的最小调度单位**：RDNA 默认 wave32；同一个 wave 内分支发散会让 lane 串行化执行。
 - **VGPR / SGPR / LDS 是同一个 occupancy 池子的三个水位**：任何一个先满，都会限制可同时驻留的 wave 数，从而限制延迟隐藏能力。
-- **9070XT 用 16GB GDDR6（非 HBM）**，带宽标称 ~760 GB/s；离 lane 越近的存储越快，优化的核心是让数据待在离 lane 近的地方。
+- **9070XT 用 16GB GDDR6（非 HBM）**，实测有效带宽约 500 GB/s（标称 ~760）；离 lane 越近的存储越快，优化的核心是让数据待在离 lane 近的地方。
 - **WMMA 是 RDNA3+ 的矩阵加速单元**，一条 wave 协作完成一个 16×16×16 的 matmul tile；GEMM/Attention 优化的核心是利用好它。
 - **Roofline 上的两条线直接来自硬件参数**：水平线是峰值算力（受是否使能 WMMA 影响），斜线是峰值带宽。
 

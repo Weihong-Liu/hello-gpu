@@ -24,7 +24,7 @@
 
 | # | 决策 | 理由 |
 |---|---|---|
-| 1 | 硬件完全替换为 9070XT（RDNA4 / gfx12 / ROCm 6.4.x / Linux-only）| 消费卡更易获得，符合入门定位 |
+| 1 | 硬件完全替换为 9070XT（RDNA4 / gfx1201 / ROCm 7.13 / WSL2）| 消费卡更易获得，符合入门定位 |
 | 2 | Profiling 篇前置到算子篇之前 | 先会「看数据」再学「改代码」，profiling-driven 正道 |
 | 3 | Triton 不单设篇，合并进算子篇做 HIP/Triton 对比 | 避免读者学两遍同一算子 |
 | 4 | 砍 LayerNorm（和 Softmax 重复），加 Flash Attention 思路章 | 体现现代优化视角 |
@@ -40,7 +40,7 @@
 |---|---|---|---|---|
 | **Part 0 入门** | 0 | 写给读者的话 | 教程定位、为什么选 9070XT、和市面教程差异、学习路线 | — |
 | | 1 | 环境准备 | 9070XT + Linux + ROCm 6.4 验证、Windows 劝退、uv 环境、最小 smoke test | 环境 |
-| | 2 | GPU 体系结构速通 | CU/Wavefront/LDS/寄存器/显存层次（RDNA4/gfx12 视角，砍 MFMA/CDNA/HBM）| 概念 |
+| | 2 | GPU 体系结构速通 | CU/Wavefront/LDS/寄存器/显存层次（RDNA4/gfx1201 视角，砍 MFMA/CDNA/HBM）| 概念 |
 | | 3 | 第一个程序 + Roofline 心智模型 | vector add 跑通、建立「理论上限」直觉 | vector add |
 | **Part 1 Profiling 实战** | 4 | benchmark 与可信计时 | 热身、重复、GPU event、避免测量陷阱 | vector add |
 | | 5 | rocprof + Omniperf 定位瓶颈 | kernel 耗时、访存/占用率计数器、strided 非合并反例 | vector add |
@@ -78,20 +78,20 @@
 - **多卡通信 / 服务化 / 动态 batching / 多副本**：指向 hello-mlsys / hello-ai-infra。
 - **LeetGPU 平台现状**：目前仅支持 CUDA/Triton/PyTorch。本书 Ch11 讲方法论，等 AMD 等价平台出现后迁移成本很低。
 
-## 8. 实施分阶段（机器未就绪）
+## 8. 实施分阶段
 
-- **阶段 A（现在可做）**：文档骨架 + 代码 + `.docs-rules` 规范更新。性能数字处留 `🚧 待 job:xxx 填充` 占位（复用现有 `scripts/gpu-queue/` 机制）。
-- **阶段 B（9070XT 机器就绪后）**：跑 `gpu-queue` 填数字。第一批优先 Ch3-Ch6（vector add + profiling）和 Ch7-Ch10（四个算子）的 baseline + 优化版。
+- **阶段 A（已完成）**：文档骨架 + 代码 + `.docs-rules` 规范更新。性能数字处留 `🚧 待 job:xxx 填充` 占位（复用现有 `scripts/gpu-queue/` 机制）。
+- **阶段 B（机器已就绪，进行中）**：9070XT 实验机已就绪（`ssh hwj-wsl-frp-2404`，gfx1201 + ROCm 7.13 + WSL2）。下一步用 `gpu-queue` 跑实验填数字。第一批优先 Ch3-Ch6（vector add + profiling）和 Ch7-Ch10（四个算子）的 baseline + 优化版。
 
-## 9. 规范层改造清单（同步进行）
+## 9. 规范层改造清单（已完成）
 
 | 文件 | 改动要点 |
 |---|---|
 | `.docs-rules/00-overview.md` | 定位改为「算子优化入门 + Agent 自动化」；阶段说明更新；Out of Scope 调整 |
 | `.docs-rules/01-writing-style.md` | 硬件上下文示例从 AI MAX 395 改为 9070XT；新增刷题/Agent 内容的写作约定 |
-| `.docs-rules/02-experiment-policy.md` | 主线硬件措辞更新；保留 `🚧 待补实验` 占位机制（机器未就绪）|
-| `.docs-rules/03-environment.md` | 实验机 host/路径/架构/ROCm 版本/wheel 源全部更新；新增 Linux-only 说明 |
-| `.docs-rules/04-hardware-matrix.md` | 主线设备 AI MAX 395 → 9070XT；gfx1151 → gfx12；ROCm 7.12.0 → 6.4.x |
+| `.docs-rules/02-experiment-policy.md` | 主线硬件措辞更新；保留 `🚧 待补实验` 占位机制（机器已就绪，可回填）|
+| `.docs-rules/03-environment.md` | 实验机 host/路径/架构/ROCm 版本/wheel 源全部更新（hwj-wsl-frp-2404 / gfx1201 / ROCm 7.13 / gfx120X-all 源 / WSL2）|
+| `.docs-rules/04-hardware-matrix.md` | 主线设备 AI MAX 395 → 9070XT；gfx1151 → gfx1201；ROCm 7.12.0 → 7.13；平台 Linux → WSL2 |
 | `.docs-rules/05-repo-layout.md` | 新 5 篇目录约定；旧 part2/part4/part5/part6 目录归档说明 |
 | `.docs-rules/README.md` | 各文件一句话总结同步更新 |
 | `AGENTS.md` | 远程实验速查里的 host 名、路径 |

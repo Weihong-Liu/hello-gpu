@@ -38,29 +38,35 @@ code/part0-intro/
 | 项目 | 基线 |
 | ---- | ---- |
 | 硬件 | AMD Radeon RX 9070 XT |
-| GPU 架构 | gfx12（RDNA4）|
-| ROCm 版本 | 6.4.x |
-| 操作系统 | **Linux**（Windows 无官方 ROCm 支持，见 1.2 节）|
-| Python 环境管理 | uv |
-| ROCm Python 包来源 | AMD radeon-ryzen 项目 wheel 源 |
+| GPU 架构 | gfx1201（RDNA4；ISA 名 `gfx12-generic`）|
+| ROCm 版本 | 7.13（`hipcc --version` 报 7.13.99004）|
+| 操作系统 | **WSL2**（Windows 11 主机上的 Linux 子系统）|
+| Python 环境管理 | uv（`uv 0.11.23`）|
+| ROCm Python 包来源 | AMD `repo.amd.com/rocm/whl/gfx120X-all/` wheel 源 |
 
-如果你的硬件或 ROCm 版本和上面对不上，不用担心——验证顺序仍然可以照搬，只是包版本、设备名、工具输出会有差异，到时候自己对照一下就好。
+如果你的硬件或 ROCm 版本和上面对不上，不用担心——验证顺序仍然可以照搬，只是包版本、设备名、工具输出会有差异，到时候自己对照一下就好（换卡时的完整调整流程见 [附录 B · 换一张卡](../../appendix/appendix-b-switch-gpu/index.md)）。
 
-> 🚧 本章涉及的具体命令输出、版本号等，需在 9070XT 实验机就绪后实测回填。下文带 `🚧 待实测` 标注的代码块即为待填内容。
+本章所有命令输出均在 `ssh hwj-wsl-frp-2404`（gfx1201 / ROCm 7.13 / WSL2）上实测。
 
-## 1.2 为什么不用 Windows
+## 1.2 平台边界：原生 Linux 优先，WSL2 可用
 
-9070XT（RDNA4）在发布时 AMD 明确**不提供 Windows 上的官方 ROCm 支持**。这一点和数据中心卡（如 Instinct 系列）不同，是消费卡的定位决定的。
-
-所以本书**只在 Linux 上跑实验**。你可以有几种选择：
+在 9070XT 上跑 ROCm，常见的有两种平台选择：
 
 | 方案 | 说明 |
 | ---- | ---- |
-| 原生 Linux 主机 | 首选，最省事 |
-| WSL2 | 技术上可行，但 ROCm 在 WSL2 下支持有限，可能遇到额外坑，不推荐新手 |
-| 双系统 | 如果你主力是 Windows，可以考虑装双系统 |
+| **原生 Linux 主机** | 工具链最完整，坑最少 |
+| **WSL2**（Windows 11 上的 Linux 子系统）| 可用，但**功能有缺失**——见下面的警告 |
 
-如果你手上只有 Windows，又不想折腾双系统，建议先用 WSL2 跟着读概念部分；等实验环节再想办法弄到 Linux 环境。但**全书实验数据均基于原生 Linux**，WSL2 上的表现可能有差异。
+::: warning WSL2 下的已知缺失
+本教程的实验机本身就是一台 WSL2 机器，实测在 WSL2 上：
+
+- ✅ `rocminfo`、`hipcc`、`hipMalloc`、PyTorch ROCm、Triton 这些**计算路径全部可用**——本教程所有代码都能跑通。
+- ❌ **`rocm-smi` 不可用**。WSL2 内核没有加载 `amdgpu` 驱动模块，`rocm-smi` 会报 `Driver not initialized (amdgpu not found in modules)`。
+
+所以本章在「验证 GPU 可见性」那一步**不会用 `rocm-smi`**，只用 `rocminfo`（可用）。如果你后续想看显存占用、温度、功耗这类运行时状态，原生 Linux 上有 `rocm-smi`，WSL2 上目前暂时不行。
+:::
+
+如果你有条件，**首选原生 Linux**——能拿到完整的工具链，少踩 WSL2 的坑。但如果你手头只有 Windows，WSL2 也能把本教程跑通，只是要接受 `rocm-smi` 等依赖内核驱动的工具不可用。
 
 ## 1.3 同步本篇 uv 环境
 
@@ -77,10 +83,32 @@ uv sync
 ```
 
 <details>
-<summary>🚧 待实测：uv sync 创建本篇环境</summary>
+<summary>输出：uv sync 创建本篇环境（gfx1201 / ROCm 7.13）</summary>
 
 ```text
-（机器就绪后在此粘贴实际输出。预期会看到 rocm==6.4.x、rocm-sdk-libraries-gfx12、torch、triton 等包被安装）
+Using CPython 3.12.3 interpreter at: /usr/bin/python3
+Creating virtual environment at: .venv
+Resolved 17 packages in 2.31s
+Downloaded setuptools (1.0MiB)
+ Downloaded setuptools
+Prepared 1 package in 736ms
+Installed 16 packages in 433ms
+ + filelock==3.29.4
+ + fsspec==2026.6.0
+ + jinja2==3.1.6
+ + markupsafe==3.0.3
+ + mpmath==1.3.0
+ + networkx==3.6.1
+ + numpy==2.5.0
+ + rocm==7.13.0
+ + rocm-sdk-core==7.13.0
+ + rocm-sdk-devel==7.13.0
+ + rocm-sdk-libraries-gfx120x-all==7.13.0
+ + setuptools==81.0.0
+ + sympy==1.14.0
+ + torch==2.11.0+rocm7.13.0
+ + triton==3.6.0+rocm7.13.0
+ + typing-extensions==4.15.0
 ```
 
 </details>
@@ -92,15 +120,21 @@ source ./activate-rocm.sh
 ```
 
 <details>
-<summary>🚧 待实测：激活 ROCm uv 环境</summary>
+<summary>输出：激活本篇 venv 后的关键检查（gfx1201 / ROCm 7.13）</summary>
+
+激活 venv 后，`hipcc` 会进入 PATH（指向 venv 内），`torch` 也能正常导入——这两点是后面编译和跑 GPU 程序的前提：
 
 ```text
-（机器就绪后在此粘贴实际输出。关键看 ROCM_PATH 是否指向 _rocm_sdk_devel）
+$ source .venv/bin/activate
+$ which hipcc
+/home/hwj/hello-gpu/code/part0-intro/.venv/bin/hipcc
+$ python -c "import torch; print(torch.__version__)"
+2.11.0+rocm7.13.0
 ```
 
-</details>
+如果你的环境里用的是 `activate-rocm.sh`（它会在激活 venv 的同时设好 `ROCM_PATH` / `HIP_PATH` / `LD_LIBRARY_PATH`），激活完请确认 `ROCM_PATH` 指向 `_rocm_sdk_devel`——指向 `_rocm_sdk_core` 的话，编译 HIP 程序会撞上 `cannot find ROCm device library`，详见 [附录 A · 环境安装细节与常见坑](../../appendix/appendix-a-env-install/index.md)。
 
-输出里**最关键的一行**是 `ROCM_PATH` 指向 `_rocm_sdk_devel`。如果你看到的是 `_rocm_sdk_core`，后面编译 HIP 程序时十有八九会撞上 `cannot find ROCm device library` 这个报错。别慌，这是 ROCm wheel 安装的一个"老熟人级"的坑，原因和处理方式我们留到本章附录里仔细讲。
+</details>
 
 ## 1.4 验证 GPU 可见性
 
@@ -109,36 +143,45 @@ source ./activate-rocm.sh
 先用 `rocminfo` 摸一摸你的 GPU：
 
 ```bash
-rocminfo | grep -E "^[[:space:]]*(Name|Marketing Name|Vendor Name|Device Type|Uuid):|gfx12" | head -40
+rocminfo | grep -E "^[[:space:]]*(Name|Marketing Name|Vendor Name|Device Type|Compute Unit):" | head -20
 ```
 
 <details>
-<summary>🚧 待实测：rocminfo 识别到 gfx12 GPU</summary>
+<summary>输出：rocminfo 识别到 gfx1201 GPU（9070XT）</summary>
 
 ```text
-（机器就绪后在此粘贴实际输出。关键看 Device Type: GPU 出现，且架构为 gfx12）
+  Name:                    12th Gen Intel(R) Core(TM) i5-12600K
+  Marketing Name:          12th Gen Intel(R) Core(TM) i5-12600K
+  Vendor Name:             CPU
+  Device Type:             CPU
+  Compute Unit:            16
+  Name:                    gfx1201
+  Marketing Name:          AMD Radeon RX 9070 XT
+  Vendor Name:             AMD
+  Device Type:             GPU
+  Compute Unit:            64
 ```
 
 </details>
 
-关键看两点：`Device Type: GPU` 必须出现，并且架构是 `gfx12`（RDNA4）。两条都对上了，说明驱动认得你的卡——第一道门已经推开一半了。
+关键看两点：`Device Type: GPU` 必须出现，并且 `Name` 是 `gfx1201`（对应 Marketing Name `AMD Radeon RX 9070 XT`）。两条都对上了，说明驱动认得你的卡——第一道门已经推开一半了。
 
-再用 `rocm-smi` 看一眼 GPU 的运行状态：
+> 如果你想确认 9070XT 的 ISA 名，可以再补一句 `rocminfo | grep amdhsa`，会看到 `amdgcn-amd-amdhsa--gfx1201` 和 `amdgcn-amd-amdhsa--gfx12-generic` 两条——前者是具体型号 target，后者是 gfx12 系列的通用 ISA。
 
-```bash
-rocm-smi
-```
+#### 不用 rocm-smi：WSL2 下的已知缺失
 
-<details>
-<summary>🚧 待实测：rocm-smi 能读取 GPU 状态</summary>
+在原生 Linux 上，验证完 `rocminfo` 后通常会接着跑 `rocm-smi` 看 GPU 的显存、温度、功耗。但**本教程实验机是 WSL2，`rocm-smi` 在这里用不了**：
 
 ```text
-（机器就绪后在此粘贴实际输出。应显示 9070XT 的显存、温度、功耗等信息）
+$ rocm-smi
+... Driver not initialized (amdgpu not found in modules)
 ```
 
-</details>
+原因：WSL2 内核没有加载 `amdgpu` 驱动模块，`rocm-smi` 依赖它读硬件状态。所以本章**只用 `rocminfo`** 这一个工具验证 GPU 可见性——它不依赖内核驱动模块，能正常工作。
 
-**如果这一步失败了，请先不要急着去跑 PyTorch、HIP 或 Triton**。上层框架全都建在底层驱动和运行时之上——底层不通，上层抛出来的错通常只会更让你迷惑。先回到驱动安装和 ROCm 官方文档去排查，确认 `rocminfo` 能看到 GPU 之后再继续。
+> `rocm-smi` 不可用**不影响**后续所有实验：`rocminfo`（验证 GPU）、`hipcc`（编译 kernel）、PyTorch ROCm（跑计算）都不走 amdgpu 内核模块那条路，在 WSL2 上都能跑。只有"看显存/温度/功耗"这类运行时监控暂时没工具可用——原生 Linux 上有 `rocm-smi`。
+
+**如果 `rocminfo` 这一步失败了（连 GPU 都看不到），请先不要急着去跑 PyTorch、HIP 或 Triton**。上层框架全都建在底层运行时之上——底层不通，上层抛出来的错通常只会更让你迷惑。先回到驱动安装和 ROCm 官方文档去排查，确认 `rocminfo` 能看到 GPU 之后再继续。
 
 ## 1.5 验证 PyTorch ROCm
 
@@ -184,11 +227,21 @@ python chapter1/check_torch_rocm.py
 ```
 
 <details>
-<summary>🚧 待实测：PyTorch ROCm smoke test</summary>
+<summary>输出：PyTorch ROCm smoke test（gfx1201 / ROCm 7.13）</summary>
 
 ```text
-（机器就绪后在此粘贴实际输出。预期 device_name 显示 9070XT，cuda_available: True）
+python: 3.12.3
+torch: 2.11.0+rocm7.13.0
+cuda_available: True
+device_count: 1
+device_name: AMD Radeon RX 9070 XT
+result_shape: (1024, 1024)
+result_dtype: torch.float32
+result_device: cuda:0
+result_checksum: -48133.230469
 ```
+
+看到 `device_name: AMD Radeon RX 9070 XT` 和 `cuda_available: True`，第二道门就过了——PyTorch 能看到 GPU 并完成了一次矩阵乘。
 
 </details>
 
@@ -311,10 +364,11 @@ hipcc --version
 ```
 
 <details>
-<summary>🚧 待实测：HIP 编译器版本</summary>
+<summary>输出：HIP 编译器版本（ROCm 7.13）</summary>
 
 ```text
-（机器就绪后在此粘贴实际输出。预期显示 ROCm 6.4.x 对应的 HIP 版本）
+$ hipcc --version
+HIP version: 7.13.99004
 ```
 
 </details>
@@ -327,11 +381,14 @@ hipcc vector_add.hip -O2 -o vector_add && echo "compile_status: PASS"
 ```
 
 <details>
-<summary>🚧 待实测：HIP 程序编译</summary>
+<summary>输出：HIP 程序编译（vector_add.hip）</summary>
 
 ```text
-（机器就绪后在此粘贴实际输出。预期 compile_status: PASS）
+$ hipcc vector_add.hip -O2 -o vector_add && echo "compile_status: PASS"
+compile_status: PASS
 ```
+
+编译通过意味着 HIP 编译器认识 gfx1201、能找到对应的 device library。
 
 </details>
 
@@ -342,15 +399,22 @@ hipcc vector_add.hip -O2 -o vector_add && echo "compile_status: PASS"
 ```
 
 <details>
-<summary>🚧 待实测：vector add 运行结果</summary>
+<summary>输出：vector add 运行结果（9070XT）</summary>
 
 ```text
-（机器就绪后在此粘贴实际输出。预期 device_name 显示 9070XT，status: PASS）
+device_name: AMD Radeon RX 9070 XT
+vector_size: 1048576
+blocks: 4096
+threads_per_block: 256
+max_error: 0
+status: PASS
 ```
+
+看到 `status: PASS` 和 `max_error: 0`，三道门全部推开——HIP 编译器认识你的 GPU、kernel 顺利启动、Host 与 Device 之间的数据拷贝正常、结果校验通过。
 
 </details>
 
-看到 `status: PASS` 那一刻，意味着这条链路已经全部接通：HIP 编译器认识你的 GPU、device library 找得到、kernel 顺利启动、Host 与 Device 之间的数据拷贝正常、结果校验通过。三道门全部推开——恭喜你，正式具备继续往后学的条件了。后面章节的每一行代码，都建立在这三道门的基础之上。
+三道门全部推开——恭喜你，正式具备继续往后学的条件了。HIP 编译器认识你的 GPU、device library 找得到、kernel 顺利启动、Host 与 Device 之间的数据拷贝正常、结果校验通过，后面章节的每一行代码都建立在这三道门的基础之上。
 
 ## 1.7 环境不通时先收集什么
 
@@ -360,7 +424,7 @@ hipcc vector_add.hip -O2 -o vector_add && echo "compile_status: PASS"
 
 | 信息 | 示例 | 为什么重要 |
 | ---- | ---- | ---- |
-| 机器信息 | Radeon RX 9070 XT / ROCm 6.4.x / Linux | 明确硬件和软件背景 |
+| 机器信息 | Radeon RX 9070 XT（gfx1201）/ ROCm 7.13 / WSL2 | 明确硬件和软件背景 |
 | 目录 | `hello-gpu/code/part0-intro` | 排查路径和环境变量问题 |
 | 环境 | `source ./activate-rocm.sh` 后运行 | 判断 venv 是否正确激活 |
 | 命令 | `python chapter1/check_torch_rocm.py` | 方便别人复现 |
@@ -380,7 +444,7 @@ python chapter1/check_torch_rocm.py 2>&1 | tee check_torch_rocm.log
 - Python 版本
 - PyTorch 版本
 - uv 环境所在路径
-- 当前 GPU 架构（gfx12）
+- 当前 GPU 架构（gfx1201）
 - 运行日期
 
 最后请把这条铁律刻在心上：**先确认底层，再确认上层**，顺序千万别反过来。
@@ -411,7 +475,7 @@ HIP / Triton / profiling 工具
 ## 本章小结
 
 - 本章推开了三道环境验证门：**ROCm 可见、PyTorch ROCm、最小 HIP 路径**，每一道都是上一道的延伸，跳不过去。
-- 9070XT 是消费卡，**只在 Linux 上有官方 ROCm 支持**，Windows 用户需要用原生 Linux 或 WSL2（不推荐）。
+- 本教程实验机用 WSL2 跑通——计算路径全可用，但 `rocm-smi` 等依赖内核 `amdgpu` 模块的工具不可用，验证 GPU 可见性只用 `rocminfo`。原生 Linux 工具链更完整。
 - 环境通过 `pyproject.toml` + `uv.lock` 固化，进入 `code/part0-intro` 后只需 `uv sync` 就能复现——不用手动装任何东西。
 - `activate-rocm.sh` 负责处理 ROCm wheel 的环境变量，最核心的职责是让 `ROCM_PATH` 指向 `_rocm_sdk_devel`，而不是 `_rocm_sdk_core`。
 - PyTorch ROCm 里看到 `cuda:0` 完全正常，是历史命名问题，**不代表**你在用 NVIDIA GPU。
@@ -422,5 +486,5 @@ HIP / Triton / profiling 工具
 
 - [uv Documentation](https://docs.astral.sh/uv/)
 - [AMD ROCm Documentation](https://rocm.docs.amd.com/)
-- [Use ROCm on Radeon GPUs（radeon-ryzen 项目）](https://rocm.docs.amd.com/projects/radeon-ryzen/en/docs-6.4.2/)
+- [AMD ROCm wheel 源（gfx120X-all）](https://repo.amd.com/rocm/whl/gfx120X-all/)
 - [PyTorch Get Started](https://pytorch.org/get-started/locally/)
