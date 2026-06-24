@@ -273,7 +273,7 @@ bytes_moved = vector_size × 3 × 4
 
 有了 baseline 数字，现在把它和理论上限对比一下，建立"这个算子离硬件极限有多远"的直觉。
 
-[第 2 章 2.7 节](../chapter2/index.md#_2-7-roofline-的硬件来源) 我们建立了 Roofline 模型：任何 kernel 的实际性能都被**算力上限**和**带宽上限**两条线卡住。现在用 vector add 实测一下它落在哪。
+[第 2 章 2.10 节](../chapter2/index.md#_2-10-roofline-的硬件来源) 我们建立了 Roofline 模型：任何 kernel 的实际性能都被**算力上限**和**带宽上限**两条线卡住。现在用 vector add 实测一下它落在哪。
 
 先算 vector add 的算术强度：
 
@@ -295,13 +295,13 @@ bytes_moved = vector_size × 3 × 4
 | ---- | ---- |
 | vector add 算术强度 | ~0.083 FLOP/Byte（memory-bound）|
 | 实测有效带宽（vector add, 16M 元素 ≈ 64 MiB）| **~601 GB/s** |
-| GDDR6 实测带宽上限（copy, ≥1 GiB 平台，见 [第 2 章 §2.8](../chapter2/index.md)）| ~500 GB/s |
+| GDDR6 实测带宽上限（copy, ≥1 GiB 平台，见 [第 2 章 §2.11](../chapter2/index.md)）| ~500 GB/s |
 | 标称带宽（理论峰值）| ~760 GB/s |
 | 带宽利用率（实测 / GDDR6 上限）| ~120%（高于 100%，见下文解释）|
 
-> vector add 实测有效带宽（601 GB/s）高于 GDDR6 实测上限（500 GB/s），看起来"超标"——原因不是测量错了，而是 16M 元素 ≈ 64 MiB 的工作集**部分落在 L2 命中区**，缓存复用拉高了有效带宽。[第 2 章 §2.8](../chapter2/index.md) 的带宽扫描里也能看到：64 MiB footprint 时 copy 带宽 561 GB/s，明显高于 1 GiB 时的 500 GB/s。这说明 vector add 在这个规模下没有真正卡在 GDDR6 上——这正是它的访存模式非常友好（完全合并、线性流式）的结果。要让带宽利用率回到 100% 以内，把输入规模推到 ≥1 GiB（远超 L2）再测即可。
+> vector add 实测有效带宽（601 GB/s）高于 GDDR6 实测上限（500 GB/s），看起来"超标"——原因不是测量错了，而是 16M 元素 ≈ 64 MiB 的工作集**部分落在 L2 命中区**，缓存复用拉高了有效带宽。[第 2 章 §2.11](../chapter2/index.md) 的带宽扫描里也能看到：64 MiB footprint 时 copy 带宽 561 GB/s，明显高于 1 GiB 时的 500 GB/s。这说明 vector add 在这个规模下没有真正卡在 GDDR6 上——这正是它的访存模式非常友好（完全合并、线性流式）的结果。要让带宽利用率回到 100% 以内，把输入规模推到 ≥1 GiB（远超 L2）再测即可。
 
-现在把这个实测点画到 Roofline 曲线上。横轴是算术强度（FLOP/Byte，对数轴），纵轴是实际性能（TFLOPS，对数轴）；两条硬件线来自 [第 2 章 §2.8](../chapter2/index.md) 的实测值（带宽 ~601 GB/s、fp32 算力 ~14.6 TFLOPS、fp16 算力 ~124 TFLOPS），vector add 点来自本节实测：
+现在把这个实测点画到 Roofline 曲线上。横轴是算术强度（FLOP/Byte，对数轴），纵轴是实际性能（TFLOPS，对数轴）；两条硬件线来自 [第 2 章 §2.11](../chapter2/index.md) 的实测值（带宽 ~601 GB/s、fp32 算力 ~14.6 TFLOPS、fp16 算力 ~124 TFLOPS），vector add 点来自本节实测：
 
 ::: figure fig-roofline-vadd
 ![Roofline 曲线：vector add 实测点](./images/roofline-vector-add.png)

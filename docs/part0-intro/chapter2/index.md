@@ -215,7 +215,151 @@ LDS 还有第二个性质：它不是一块纯线性内存，而是**分 bank** 
 - **GDDR6 不是 HBM**：9070XT 的显存带宽实测约 **500 GB/s**（标称 ~760 GB/s），远低于 HBM 设备（动辄几 TB/s）。这意味着对 9070XT 来说，**memory-bound 算子的优化空间更大也更关键**——很多算子会卡在带宽上。
 - **合并访存（Coalescing）**：连续的线程访问连续的地址时，硬件可以把多次访问合并成一次大事务，充分利用带宽。反之，strided 访问（线程访问间隔地址）会让带宽利用率大跌。这是第 5 章 profiling 会用 strided 反例演示的重点。
 
-## 2.6 WMMA：RDNA4 的矩阵加速单元
+## 2.6 L1 / L2 Cache：片上缓存怎么工作
+
+上一节的显存层次表里，L1/L2 只占了两行。但对算子优化来说，它们直接决定了一个 wavefront 的 32 个 lane 究竟会触发几次外部内存事务——是合并访存这件事在硬件侧的执行者。
+
+### 几个尺寸先记住
+
+9070XT（RDNA4）的片上缓存层次（量级，以实测为准）：
+
+| 层级 | 位置 | 容量 | 说明 |
+| ---- | ---- | ---- | ---- |
+| L0 vector cache | 每 SIMD 私有 | ~32 KB | 最贴近 VALU 的一层 |
+| L1 / Vector L1 | 每 SA（Shader Array）| ~128-256 KB | RDNA3+ 在这层做了扩容 |
+| L2 | 全 GPU 共享 | 数 MB | 16-way 关联，所有 CU 共享 |
+
+> RDNA4 的精确 cacheline 大小和聚合粒度，AMD 未在公开资料里以一句话给出。但有一条跨架构都成立的规则：**"连续线程读连续地址 + 自然对齐"始终是最安全的写法**——具体聚合数字以 RDNA ISA 白皮书与微基准为准，不要直接挪用 GCN 的 64 字节模型。
+
+### L1 / L2 给算子的三个关键含义
+
+| 关注点 | L1 / L2 怎么影响 | 算子例子 |
+| ---- | ---- | ---- |
+| 复用粒度 | 同一个 cacheline 被多少 lane / wave 重读 | GEMM tile、卷积 stencil |
+| 命中策略 | 流式访问 vs 时间局部性 | 大向量逐元素 op：基本不命中 L1，靠合并访存；GEMM tile：靠 L1/L2 复用 |
+| 写一致性 | 写直达（write-through）到 L2，如何对其他 CU 可见 | reduction、原子 op、跨 block 同步 |
+
+举个具体场景。一个 vector add 把两个数组逐元素加起来：每个元素只读一次、写一次，没有任何复用——L1 命中率会非常低，性能完全由 L2 → GDDR6 这条链路的有效带宽决定。这就是典型 memory-bound。
+
+换个场景，一个 GEMM 把 K 维度切 tile 加载到 LDS：每个 A、B 元素被 tile 内的多个线程重复用——这时 L1/L2 命中率高，性能更接近 compute-bound。理解 L1 / L2 是为了**心里有一根"什么样的访问会命中、什么样的不会"的尺**。
+
+> **写一致性的坑**：GPU 上的 L1 通常是写直达（write-through）——L1 收到写请求后会更新 L2。这避免了"两个 L1 各自缓存同一份数据，不知道谁是新的"这种一致性问题。代价是写带宽压力更大，所以多线程写同一行 cacheline 时，**硬件会把它折叠成单次写**——这个机制在 reduction 和原子操作里都会再遇到。
+
+## 2.7 LDS 详解与 bank 冲突
+
+LDS（Local Data Share，CUDA 里叫 shared memory）是 GPU 上**最容易把性能写飞的一块片上 SRAM**。一个 GEMM、一个 Softmax、一个 reduction，几乎都要靠 LDS 来藏访存延迟、做线程间通信。但 LDS 不是"普通的 SRAM"——它有 bank 结构，stride 选错可以让吞吐直接腰斩。
+
+### LDS 的 bank 结构
+
+- LDS 被划分为 **32 个 bank**，每个 bank 宽 4 字节（1 dword）；
+- 地址到 bank 的映射是 `bank = (byte_address / 4) mod 32`；
+- 当同一个 wave 在同一个 phase 内有多个 lane 访问**不同地址但落在同一个 bank** 时，发生 bank conflict，硬件被迫串行化。
+
+::: figure fig-lds-banks
+```mermaid
+flowchart LR
+    subgraph Wave["1 个 wavefront 的 32 lane"]
+        L0[Lane 0] --> A0
+        L1[Lane 1] --> A1
+        L2[Lane 2] --> A2
+        L31[Lane 31] --> A31
+    end
+    subgraph LDS["LDS 32 banks"]
+        A0[Bank 0]
+        A1[Bank 1]
+        A2[Bank 2]
+        A31[Bank 31]
+    end
+```
+
+LDS 的 32 个 bank：wave32 下 32 个 lane 恰好各落一个 bank，连续 dword 访问无冲突
+:::
+
+如 @fig-lds-banks 所示，9070XT 默认 wave32，32 个 lane 各访问连续 dword 时正好各落一个 bank——这是最理想的访问模式。
+
+### 三种最常见的 bank 模式
+
+| 访问模式 | 例子 | 是否冲突 |
+| ---- | ---- | ---- |
+| 连续 dword | `lds[tid]` | 通常无冲突（32 lane 各落一个 bank）|
+| 同一地址广播 | `lds[0]` 被全 wave 读 | 硬件 broadcast，不视为冲突 |
+| Stride 是 32 的倍数 | `lds[tid * 32]` | **N-way 冲突最严重**，所有 lane 全打到同一个 bank |
+| Stride 是 33（1 + 32）| 经典的 padding 写法 | 有效避免 stride=32 这一类冲突 |
+| 2D tile 行主写 + 列主读 | GEMM 的 LDS 缓冲 | naive 实现读侧常见冲突，需要 swizzle/padding 修复 |
+
+### 一个直观的踩坑例子：GEMM 的 LDS tile
+
+写过 HIP GEMM 的人都见过这一幕：把 A 的 tile 行主存进 LDS，再让另一组线程列主地读出来——**写侧没冲突，读侧出现 bank 冲突**：
+
+::: figure fig-gemm-bank-conflict
+```mermaid
+flowchart TD
+    A[Naive 2D tile in LDS] --> B[LDS write: 无冲突]
+    A --> C[LDS read: bank 冲突]
+    C --> D[Padding 或 XOR Swizzle 后]
+    D --> E[Read 和 Write 都无冲突]
+```
+
+经典的 GEMM tile bank 冲突：写没问题，读冲突；Padding 或 Swizzle 后两边都不冲突
+:::
+
+修复手段一般有两类：
+
+- **Padding（加一列）**：让每行多一个 dword（如 `As[BLOCK_K + 1]`），破坏 stride 32 的对齐；最简单，代价是浪费一点 LDS 容量；
+- **XOR Swizzle**：对地址做 XOR 变换，让物理 bank 编号被打散；这是 Composable Kernel / rocWMMA 在生产代码里更常用的方案。
+
+[第 9 章 GEMM](../../part2-kernels/chapter9/index.md) 会用真实 kernel 把 padding 跑出来对比。
+
+> **怎么发现自己撞了 bank 冲突**：不要靠猜。用 rocprof / Omniperf 看 LDS 相关计数器（如 `SQ_LDS_BANK_CONFLICT`），或故意构造 stride=32 的访问看吞吐在哪里腰斩——具体方法在 [第 5 章](../../part1-profiling/chapter5/index.md) profiling 篇讲。
+
+## 2.8 全局内存合并访存（Coalescing）
+
+合并访存是初学者最早听说、但最容易"以为自己懂了其实没懂"的一个概念。它讲的是同一个 wave 内的 32 个 lane 怎样合并自己的内存请求；理解它的关键不是"连续就好"，而是**理解硬件按多少字节、怎么对齐去聚合 wave 内的请求**。
+
+### 合并规则与事务条数
+
+AMD GPU 的 L2 cache 访问以 cacheline 为单位（经典 GCN 是 64 字节、按 64 字节对齐；RDNA 的具体粒度见 ISA 文档）。一个 wave 的 32 个 lane 各自的访问，会被硬件聚合成"覆盖目标 cacheline 集合的最少请求数"。
+
+::: figure fig-coalesce-txns
+```mermaid
+flowchart TD
+    subgraph Good["合并访存：32 lane 读 32 个连续 fp32"]
+        G1["32 lane × 4 B = 128 B"]
+        G2["对齐到 2 条 64 B cacheline"]
+        G3["硬件发出 2 次内存事务"]
+    end
+    subgraph Bad["未合并：32 lane 各自相距很远"]
+        B1["每个 lane 落在不同 cacheline"]
+        B2["硬件被迫发出最多 32 次事务"]
+        B3["有效带宽下降可达一个数量级"]
+    end
+```
+
+合并访存与非合并访存：差距来自硬件发出的事务条数
+:::
+
+如 @fig-coalesce-txns 所示，"连续线程访问连续地址"被翻译成硬件语言，就是"用最少条 cacheline 事务覆盖 wave 的请求集合"。
+
+### 几种典型访存模式的代价对比
+
+| 模式 | 例子 | wave 发出的事务条数 | 备注 |
+| ---- | ---- | ---- | ---- |
+| 连续读（最佳）| `out[tid] = in[tid]` | 2 条（32×4 B = 128 B）| 全合并 |
+| 跨步 2 读 | `out[tid] = in[tid * 2]` | 至少 ×2 | 有效带宽折半 |
+| 跨步 16 读 | `out[tid] = in[tid * 16]` | 接近 32 条 | 几乎没有合并 |
+| 同地址广播 | 所有 lane 读 `in[0]` | 1 条 + 广播 | 命中后基本免费 |
+| 写多 lane → 同地址 | 普通 store | 硬件折叠成 1 次 | atomics 不享受这个优化 |
+| 2D 行主图像列读 | `img[col * H + row]` | 灾难性 | 改 layout 或转置 |
+
+### 给算子写法的三条直觉
+
+1. **先想"哪个变量随 lane 索引变化"**，让它做内层 stride 1 的访问；
+2. **fp16 / bf16 的算子尽量做向量化 load**：AMD 上常见的 `global_load_dwordx4` 一条指令一个 lane 加载 16 字节，整个 wave 合起来 512 字节——比 4 条 dword 指令少一个数量级的发射开销；
+3. **遇到 transpose / strided slice，把转置或 gather 单独做成一个 kernel**，不要塞进主算子里。
+
+[第 3 章](../chapter3/index.md) 的 vector add 就是全合并的典型（连续线程读连续地址），[第 5 章](../../part1-profiling/chapter5/index.md) 会用一个 strided 反例对比它的代价，[第 7 章 Reduction](../../part2-kernels/chapter7/index.md) 和 [第 9 章 GEMM](../../part2-kernels/chapter9/index.md) 会用真实 kernel 把这三条逐条跑一遍。
+
+## 2.9 WMMA：RDNA4 的矩阵加速单元
 
 这一节把"AI 算子怎么落到硬件矩阵单元上"讲清楚——它是 GEMM、Attention 这类算子能跑得多快的核心来源。
 
@@ -259,7 +403,7 @@ flowchart TD
 - 在 9070XT（RDNA4）上写矩阵相关 kernel，**优先确认 WMMA 路径**：要么用 rocWMMA 帮你封好，要么直接调 `__builtin_amdgcn_wmma_*` 内置函数。第 2 篇的 [GEMM](../../part2-kernels/chapter9/index.md) 会做对比实验。
 - WMMA 的 tile 形状决定了 BLOCK_M / BLOCK_N / BLOCK_K 的最佳取值。第 2 篇的 Triton 章节会把这点反复用到。
 
-## 2.7 Roofline 的硬件来源
+## 2.10 Roofline 的硬件来源
 
 最后一节把硬件参数翻译成 **Roofline 模型** 上的两条线，这样后面我们打开 profiler 时，就能很快判断"还有多少空间"。
 
@@ -320,7 +464,7 @@ Roofline 的两条线：左半边由带宽决定，右半边由算力决定
 
 后面 [第 3 章](../chapter3/index.md) 会用 vector add 跑通第一个程序，[第 6 章](../../part1-profiling/chapter6/index.md) 会把算子点画到真实 Roofline 上。
 
-## 2.8 实测：9070XT 的带宽与算力
+## 2.11 实测：9070XT 的带宽与算力
 
 前面两节的 Roofline 数字不是拍脑袋来的，全部用 `code/part0-intro/chapter2/micro_bench.py` 在实验机（9070XT / gfx1201 / ROCm 7.13 / WSL2）上实测。完整输出如下，方便你对照复现：
 

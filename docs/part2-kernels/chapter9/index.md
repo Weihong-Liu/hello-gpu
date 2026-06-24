@@ -9,7 +9,7 @@ description: "Hello GPU 第9章 · 分块复用、寄存器 blocking、不追 ro
 
 > 矩阵乘（General Matrix Multiplication，GEMM）是 AI 计算中出现频率最高的算子。全连接层、注意力的 QKV 投影、FFN 的两个线性变换——几乎每一层都可以归结为若干次 GEMM。本章不追平 rocBLAS，而是通过五个版本的教学实现，从最朴素的 Naive 写法出发，逐步引入 Tiling、LDS 缓存、Register Blocking 和组合优化，让你看清高性能 GEMM 的基本思路。
 >
-> 关于硬件：9070XT 是 RDNA4 架构，它的矩阵加速靠 **WMMA**（Wave Matrix Multiply Accumulate）而不是 MFMA——MFMA 是 CDNA 数据中心卡的指令族，RDNA4 没有。WMMA 的基本形态在第 2 章 2.6 节（[WMMA：RDNA4 的矩阵加速单元](../../part0-intro/chapter2/index.md)）已经讲过，本章在讨论"教学版离库还有多远"时会反复用到。
+> 关于硬件：9070XT 是 RDNA4 架构，它的矩阵加速靠 **WMMA**（Wave Matrix Multiply Accumulate）而不是 MFMA——MFMA 是 CDNA 数据中心卡的指令族，RDNA4 没有。WMMA 的基本形态在第 2 章 2.9 节（[WMMA：RDNA4 的矩阵加速单元](../../part0-intro/chapter2/index.md)）已经讲过，本章在讨论"教学版离库还有多远"时会反复用到。
 
 ## 9.1 GEMM 为什么是核心算子
 
@@ -372,7 +372,7 @@ rocBLAS 代表了当前软件栈能达到的上限（RDNA4 上内部用 WMMA）�
 
 4. **fp16 实验**：把 v4 的数据类型改为 `__half`（fp16），重新跑 M=N=K=4096。> 🚧 待 job 填充（9070XT）：fp16 重测结果，以及是否进一步接 WMMA 的 fp16 路径。
 
-5. **rocBLAS 为什么快**：在 gfx12 上，WMMA 的 fp32 / fp16 吞吐相对 SIMD FMA 有何不同？（WMMA 基础见第 2 章 2.6 节。）
+5. **rocBLAS 为什么快**：在 gfx12 上，WMMA 的 fp32 / fp16 吞吐相对 SIMD FMA 有何不同？（WMMA 基础见第 2 章 2.9 节。）
 
 ## 本章小结
 
@@ -381,7 +381,7 @@ rocBLAS 代表了当前软件栈能达到的上限（RDNA4 上内部用 WMMA）�
 - Tiling 把大矩阵分块，让每次从 DRAM 搬来的数据被整个 block 的线程共同复用，是后续一切优化的前提。
 - LDS 把 tile 从 DRAM 搬到片上，v0 → v1 通常能带来最大的性能跃升。
 - Register Blocking 让每个线程负责多个输出，把 LDS 的数据进一步在寄存器里复用，是逼近计算峰值的关键步骤。
-- v4 组合版综合了以上所有技术，但仍与 rocBLAS 有差距——rocBLAS 使用了 WMMA 等专用矩阵指令（WMMA 见第 2 章 2.6 节）。
+- v4 组合版综合了以上所有技术，但仍与 rocBLAS 有差距——rocBLAS 使用了 WMMA 等专用矩阵指令（WMMA 见第 2 章 2.9 节）。
 - Triton 把"分块 + 寄存器复用"从手写变成声明：`tl.load` / `tl.dot` 一行替代了 LDS 协作加载、同步、bank padding，在 RDNA4 上由后端映射到 WMMA。
 - 下一章（[第 10 章 Flash Attention 思路](../chapter10/index.md)）把 Softmax（[第 8 章](../chapter8/index.md)）和本章 GEMM 的思路综合起来。
 
