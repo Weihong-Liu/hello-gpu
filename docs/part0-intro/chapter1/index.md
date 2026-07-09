@@ -1,6 +1,6 @@
 ---
 title: "第1章 环境准备"
-description: "Hello GPU 第1章 · 9070XT + Linux + ROCm 6.4 验证、Windows 劝退、uv 环境、最小 smoke test"
+description: "Hello GPU 第1章 · 9070XT + 原生 Ubuntu + ROCm 7.13 验证、Windows/WSL2 边界、uv 环境、最小 smoke test"
 ---
 
 # 第1章 环境准备
@@ -40,13 +40,13 @@ code/part0-intro/
 | 硬件 | AMD Radeon RX 9070 XT |
 | GPU 架构 | gfx1201（RDNA4；ISA 名 `gfx12-generic`）|
 | ROCm 版本 | 7.13（`hipcc --version` 报 7.13.99004）|
-| 操作系统 | **WSL2**（Windows 11 主机上的 Linux 子系统）|
-| Python 环境管理 | uv（`uv 0.11.23`）|
+| 操作系统 | **原生 Ubuntu 24.04**（Linux 6.17.0-35-generic，x86_64）|
+| Python 环境管理 | uv（`uv 0.11.26`）|
 | ROCm Python 包来源 | AMD `repo.amd.com/rocm/whl/gfx120X-all/` wheel 源 |
 
 如果你的硬件或 ROCm 版本和上面对不上，不用担心——验证顺序仍然可以照搬，只是包版本、设备名、工具输出会有差异，到时候自己对照一下就好（换卡时的完整调整流程见 [附录 B · 换一张卡](../../appendix/appendix-b-switch-gpu/index.md)）。
 
-本章所有命令输出均在 `ssh hwj-wsl-frp-2404`（gfx1201 / ROCm 7.13 / WSL2）上实测。
+本章所有命令输出均在 Radeon RX 9070 XT（gfx1201）+ ROCm 7.13 + 原生 Ubuntu 24.04 上实测，原始日志见 `code/part0-intro/chapter1/logs/`。
 
 ## 1.2 平台边界：原生 Linux 优先，WSL2 可用
 
@@ -58,15 +58,16 @@ code/part0-intro/
 | **WSL2**（Windows 11 上的 Linux 子系统）| 可用，但**功能有缺失**——见下面的警告 |
 
 ::: warning WSL2 下的已知缺失
-本教程的实验机本身就是一台 WSL2 机器，实测在 WSL2 上：
+如果你使用 WSL2 跟着学习，需要提前知道：
 
-- ✅ `rocminfo`、`hipcc`、`hipMalloc`、PyTorch ROCm、Triton 这些**计算路径全部可用**——本教程所有代码都能跑通。
-- ❌ **`rocm-smi` 不可用**。WSL2 内核没有加载 `amdgpu` 驱动模块，`rocm-smi` 会报 `Driver not initialized (amdgpu not found in modules)`。
+- ✅ `rocminfo`、`hipcc`、`hipMalloc`、PyTorch ROCm、Triton 这些**计算路径通常可用**。
+- ❌ **`rocm-smi` 和 `amd-smi` 都不可用**。WSL2 内核没有加载 `amdgpu` 驱动模块（通过 `/dev/dxg` 暴露 GPU），两个工具都会报 `Driver not initialized (amdgpu not found in modules)`。
+- ❌ 硬件性能计数器不可作为可用前提，后续 `rocprofv3 --pmc` / Omniperf 相关章节请以原生 Linux 为准。
 
-所以本章在「验证 GPU 可见性」那一步**不会用 `rocm-smi`**，只用 `rocminfo`（可用）。如果你后续想看显存占用、温度、功耗这类运行时状态，原生 Linux 上有 `rocm-smi`，WSL2 上目前暂时不行。
+所以本章在「验证 GPU 可见性」那一步只依赖 `rocminfo`，不把 `rocm-smi` / `amd-smi` 作为必需步骤。如果你后续想看显存占用、温度、功耗这类运行时状态，原生 Linux 上可以用（典型输出见下方 §1.4），WSL2 上两个工具都不行。
 :::
 
-如果你有条件，**首选原生 Linux**——能拿到完整的工具链，少踩 WSL2 的坑。但如果你手头只有 Windows，WSL2 也能把本教程跑通，只是要接受 `rocm-smi` 等依赖内核驱动的工具不可用。
+如果你有条件，**首选原生 Linux**——能拿到完整的工具链（`rocm-smi` / `amd-smi` / `rocprofv3 --pmc` 全部可用），少踩 WSL2 的坑。但如果你手头只有 Windows，WSL2 也能把本教程跑通，只是要接受 `rocm-smi` / `amd-smi` 等依赖内核驱动的工具不可用。
 
 ## 1.3 同步本篇 uv 环境
 
@@ -127,7 +128,7 @@ source ./activate-rocm.sh
 ```text
 $ source .venv/bin/activate
 $ which hipcc
-/home/hwj/hello-gpu/code/part0-intro/.venv/bin/hipcc
+.venv/bin/hipcc
 $ python -c "import torch; print(torch.__version__)"
 2.11.0+rocm7.13.0
 ```
@@ -168,18 +169,95 @@ rocminfo | grep -E "^[[:space:]]*(Name|Marketing Name|Vendor Name|Device Type|Co
 
 > 如果你想确认 9070XT 的 ISA 名，可以再补一句 `rocminfo | grep amdhsa`，会看到 `amdgcn-amd-amdhsa--gfx1201` 和 `amdgcn-amd-amdhsa--gfx12-generic` 两条——前者是具体型号 target，后者是 gfx12 系列的通用 ISA。
 
-#### 不用 rocm-smi：WSL2 下的已知缺失
+#### rocm-smi / amd-smi：原生 Linux 可用，WSL2 下都不支持
 
-在原生 Linux 上，验证完 `rocminfo` 后通常会接着跑 `rocm-smi` 看 GPU 的显存、温度、功耗。但**本教程实验机是 WSL2，`rocm-smi` 在这里用不了**：
+在原生 Linux 上，验证完 `rocminfo` 后通常接着跑 `rocm-smi`（GPU 状态速览）和 `amd-smi`（更详细的硬件拓扑/功耗/clock）看 GPU 的显存、温度、功耗。本教程实验机（原生 Ubuntu 24.04 + 9070XT）上这两个工具的典型输出：
+
+<details>
+<summary>输出：rocm-smi（原生 Ubuntu，9070XT）</summary>
+
+```text
+$ rocm-smi
+
+========================================= ROCm System Management Interface =========================================
+=================================================== Concise Info ===================================================
+Device  Node  IDs              Temp    Power  Partitions          SCLK     MCLK    Fan  Perf  PwrCap  VRAM%  GPU%
+              (DID,     GUID)  (Edge)  (Avg)  (Mem, Compute, ID)
+====================================================================================================================
+0       1     0x7550,   28946  35.0°C  32.0W  N/A, N/A, 0         1664Mhz  875Mhz  0%   auto  317.0W  21%    1%
+====================================================================================================================
+```
+
+`rocm-smi` 一行给出关键运行时状态：温度（Edge 35°C）、功耗（32W / 上限 317W）、核心/显存频率（SCLK 1664MHz / MCLK 875MHz）、显存占用（21%）、GPU 利用率（1%）。想看产品名加 `--showproductname`：
+
+```text
+$ rocm-smi --showproductname
+GPU[0]  : Card Series:    AMD Radeon RX 9070 XT
+GPU[0]  : Card Model:     0x7550
+GPU[0]  : GFX Version:    gfx1201
+```
+
+版本：`ROCM-SMI version: 4.0.0` / `ROCM-SMI-LIB version: 7.8.0`（ROCm 7.13 自带）。
+
+</details>
+
+<details>
+<summary>输出：amd-smi（原生 Ubuntu，9070XT，信息更详细）</summary>
+
+`amd-smi` 是 `rocm-smi` 的后继者，提供更完整的硬件拓扑（PCIe 版本/带宽、功耗限制、固件版本等），它的输出比 `rocm-smi` 详细得多：
+
+```text
+$ amd-smi static     # 静态硬件信息（不随负载变化）
+GPU: 0
+    ASIC:
+        MARKET_NAME: AMD Radeon RX 9070 XT
+        DEVICE_ID: 0x7550
+        NUM_COMPUTE_UNITS: 64
+        TARGET_GRAPHICS_VERSION: gfx1201
+    BUS:
+        BDF: 0000:03:00.0
+        MAX_PCIE_WIDTH: 16
+        MAX_PCIE_SPEED: 32 GT/s
+        PCIE_INTERFACE_VERSION: Gen 5
+    LIMIT:
+        PPT0:
+            SOCKET_POWER_LIMIT: 317 W       # 标称 TBP
+        SLOWDOWN_EDGE_TEMPERATURE: 110 °C   # 温度墙
+
+$ amd-smi metric     # 运行时指标（随负载变化）
+GPU: 0
+    USAGE:
+        GFX_ACTIVITY: 6 %
+        UMC_ACTIVITY: 1 %                   # 显存控制器活动
+    POWER:
+        SOCKET_POWER: 36 W
+        THROTTLE_STATUS: UNTHROTTLED        # 是否降频
+    CLOCK:
+        GFX_0:  CLK: 1221 MHz  (MIN 500 / MAX 2460)
+        MEM_0:  ...
+```
+
+版本：`AMD-SMI Tool: 26.4.0 | ROCm version: 7.13.0`。`amd-smi monitor` 给类似 `rocm-smi` 的紧凑表格视图，`amd-smi static` 给静态拓扑，`amd-smi metric` 给运行时指标——三个子命令分工明确。
+
+> 写文档时该用哪个？看你需要的信息粒度：`rocm-smi` 输出紧凑，适合一句话带过 GPU 状态；`amd-smi static` 适合记录硬件参数（CU 数、PCIe 版本、功耗墙），这些数字写进章节的"硬件上下文"很方便。本教程的硬件参数（64 CU、317W TBP、Gen5 PCIe）都从这里来。
+
+</details>
+
+**如果你在 WSL2 上学习，这两个工具都用不了**：
 
 ```text
 $ rocm-smi
 ... Driver not initialized (amdgpu not found in modules)
+
+$ amd-smi monitor
+（同样报错，依赖 amdgpu 内核模块）
 ```
 
-原因：WSL2 内核没有加载 `amdgpu` 驱动模块，`rocm-smi` 依赖它读硬件状态。所以本章**只用 `rocminfo`** 这一个工具验证 GPU 可见性——它不依赖内核驱动模块，能正常工作。
+原因：WSL2 通过 `/dev/dxg`（不是 Linux 原生的 `amdgpu` 驱动）暴露 GPU，`rocm-smi` 和 `amd-smi` 都依赖 `amdgpu` 内核模块读硬件状态，WSL2 里没有这个模块。同样受影响的还有 `rocprofv3 --pmc` 的硬件计数器（依赖 KFD，见 [第 5 章 §5.3](../../part1-profiling/chapter5/index.md)）。
 
-> `rocm-smi` 不可用**不影响**后续所有实验：`rocminfo`（验证 GPU）、`hipcc`（编译 kernel）、PyTorch ROCm（跑计算）都不走 amdgpu 内核模块那条路，在 WSL2 上都能跑。只有"看显存/温度/功耗"这类运行时监控暂时没工具可用——原生 Linux 上有 `rocm-smi`。
+所以本章**只用 `rocminfo`** 这一个工具作为必需验证项——它不依赖 `amdgpu` / `rocm-smi` 那条状态监控路径，WSL2 上也能跑。
+
+> `rocm-smi` / `amd-smi` 不可用**不影响**本章这三道门：`rocminfo`（验证 GPU）、`hipcc`（编译 kernel）、PyTorch ROCm（跑计算）都不走状态监控这条路。真正会受影响的是后续依赖 KFD / PMU 的 profiling 计数器，所以 profiling 篇以原生 Linux 的输出为准。如果你手头只有 WSL2，计算和编译全程能跑通，只是看不到温度/功耗/利用率这类运行时状态。
 
 **如果 `rocminfo` 这一步失败了（连 GPU 都看不到），请先不要急着去跑 PyTorch、HIP 或 Triton**。上层框架全都建在底层运行时之上——底层不通，上层抛出来的错通常只会更让你迷惑。先回到驱动安装和 ROCm 官方文档去排查，确认 `rocminfo` 能看到 GPU 之后再继续。
 
@@ -238,7 +316,7 @@ device_name: AMD Radeon RX 9070 XT
 result_shape: (1024, 1024)
 result_dtype: torch.float32
 result_device: cuda:0
-result_checksum: -48133.230469
+result_checksum: -12872.921875
 ```
 
 看到 `device_name: AMD Radeon RX 9070 XT` 和 `cuda_available: True`，第二道门就过了——PyTorch 能看到 GPU 并完成了一次矩阵乘。
@@ -368,7 +446,7 @@ hipcc --version
 
 ```text
 $ hipcc --version
-HIP version: 7.13.99004
+HIP version: 7.13.99004-3309c6114a
 ```
 
 </details>
@@ -424,7 +502,7 @@ status: PASS
 
 | 信息 | 示例 | 为什么重要 |
 | ---- | ---- | ---- |
-| 机器信息 | Radeon RX 9070 XT（gfx1201）/ ROCm 7.13 / WSL2 | 明确硬件和软件背景 |
+| 机器信息 | Radeon RX 9070 XT（gfx1201）/ ROCm 7.13 / 原生 Ubuntu 24.04 | 明确硬件和软件背景 |
 | 目录 | `hello-gpu/code/part0-intro` | 排查路径和环境变量问题 |
 | 环境 | `source ./activate-rocm.sh` 后运行 | 判断 venv 是否正确激活 |
 | 命令 | `python chapter1/check_torch_rocm.py` | 方便别人复现 |
@@ -475,7 +553,7 @@ HIP / Triton / profiling 工具
 ## 本章小结
 
 - 本章推开了三道环境验证门：**ROCm 可见、PyTorch ROCm、最小 HIP 路径**，每一道都是上一道的延伸，跳不过去。
-- 本教程实验机用 WSL2 跑通——计算路径全可用，但 `rocm-smi` 等依赖内核 `amdgpu` 模块的工具不可用，验证 GPU 可见性只用 `rocminfo`。原生 Linux 工具链更完整。
+- 本教程当前基线是原生 Ubuntu 24.04 + ROCm 7.13；WSL2 读者通常也能跑通计算路径，但 `rocm-smi` / `amd-smi` 与硬件性能计数器相关能力不能作为可用前提。
 - 环境通过 `pyproject.toml` + `uv.lock` 固化，进入 `code/part0-intro` 后只需 `uv sync` 就能复现——不用手动装任何东西。
 - `activate-rocm.sh` 负责处理 ROCm wheel 的环境变量，最核心的职责是让 `ROCM_PATH` 指向 `_rocm_sdk_devel`，而不是 `_rocm_sdk_core`。
 - PyTorch ROCm 里看到 `cuda:0` 完全正常，是历史命名问题，**不代表**你在用 NVIDIA GPU。

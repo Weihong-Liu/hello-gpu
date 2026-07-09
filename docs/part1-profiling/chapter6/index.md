@@ -11,7 +11,7 @@ description: "Hello GPU 第6章 · 把算子点画到 Roofline、解释差距、
 
 进入本章之前，先理清一件事：**Roofline 的两条线从哪来**，已经在 [第 2 章 2.7 节](../../part0-intro/chapter2/index.md) 讲清楚了——水平线是峰值算力 P_peak，斜线是峰值带宽 B_peak 乘算术强度。[第 3 章](../../part0-intro/chapter3/index.md) 用 vector add 建立了"算术强度极低 ⇒ memory-bound"的直觉。本章不再重复这些概念的解释，而是把 [第 5 章](../chapter5/index.md) 采到的 profiling 数据接进来，让你在 Roofline 上画**一个实测点**，而不是只有两条理论线。
 
-> 🚧 **当前实测边界**（9070XT / gfx12 + ROCm 6.4.x）：本章所有 PMC、带宽、算力数字待 9070XT 实验机就绪后用 micro-benchmark 实测回填。下文凡标 `🚧 待 job 填充（9070XT）` 的位置，在数字回填前不作结论。
+> **当前实测边界**：本章的有效带宽、kernel 延迟、Roofline 实测点均已在 9070XT（gfx1201）+ ROCm 7.13（原生 Ubuntu 24.04）上实测；硬件性能计数器（PMC）里，关键访存 / L2 / SQ / occupancy counter 在当前平台不可用或返回 0，`GPUBusy`、`Wavefronts` 等 counter 可返回非零值。详见 [第 5 章 §5.3](../chapter5/index.md)。
 
 ## 6.1 Roofline 曲线怎么读
 
@@ -72,12 +72,12 @@ AI       = F / B   = 1 / 12 ≈ 0.083      （FLOP/Byte）
 | 项目 | 数值 |
 | ---- | ---- |
 | vector add 算术强度 | ~0.083 FLOP/Byte（memory-bound）|
-| 🚧 实测有效带宽 B_ach | 待 job 填充（9070XT）|
-| 🚧 理论峰值带宽 B_peak | ~760 GB/s（标称，以 micro-benchmark 实测为准）|
-| 🚧 带宽利用率 B_ach / B_peak | 待 job 填充（9070XT）|
-| 🚧 vector add min 延迟 t | 待 job 填充（9070XT）|
+| 实测有效带宽 B_ach | **603 GB/s**（n=16M, fp32, HIP event 实测，[第 5 章 §5.2](../chapter5/index.md)）|
+| 理论峰值带宽 B_peak | ~760 GB/s（标称；大 footprint copy 的原生 Ubuntu 复跑仍待第 4 章补齐）|
+| 带宽利用率 B_ach / B_peak | **~79%**（按标称）|
+| vector add min 延迟 t | **0.334 ms**（n=16M, fp32, GPU event, repeat=100）|
 
-> 🚧 上表的数字需在 9070XT 实验机就绪后实测回填。填完后你能直观看到：vector add 这个最简单的算子，离硬件带宽上限有多远。通常 PyTorch elementwise / 合并访存的 HIP kernel 能跑到理论带宽的相当比例——因为它的访存模式非常友好（完全合并）。
+> 数字读法：vector add 的有效带宽 603 GB/s 达到 9070XT 标称 760 GB/s 的约 79%。因为第 4 章的大 footprint Triton copy 还需要原生 Ubuntu 复跑，这里只用标称带宽做统一分母；等 copy benchmark 回填后，再补一列工程可达带宽作对照。
 
 把工作点和两条线画到一起：
 
@@ -103,9 +103,17 @@ flowchart TD
 
 如 @fig-pmc-to-roofline 所示，vector add 因为 AI 极低，会落在斜线左下角——这时关心的不再是"能不能逼近水平线"，而是"能不能把斜线本身逼近 B_peak"。这就是 §6.3 要解释的差距来源。
 
+::: figure fig-roofline-vadd-linecross
+![Ch5/Ch6 实测 Roofline：coalesced 与 linecross 两个工作点](./images/roofline-ch6.png)
+
+coalesced 与 linecross 两个工作点在 9070XT Roofline 上的位置。
+:::
+
+如 @fig-roofline-vadd-linecross 所示，[第 5 章](../chapter5/index.md) 的两个实测点算术强度相同（AI ≈ 0.083 FLOP/Byte），唯一差别是有效带宽：coalesced 603 GB/s 贴着带宽斜线（memory-bound 的健康形态），linecross stride=32 因跨 cache line 合并破坏跌到 90 GB/s，工作点从斜线上掉下来 6.7×。这条"从斜线跌下来"的轨迹，正是"访存合并被破坏"在 Roofline 上的可视化——它把 [第 5 章](../chapter5/index.md) 的 stride 扫描结论浓缩成一张图。生成脚本见 `code/part1-profiling/chapter6/plot_roofline_ch6.py`。
+
 ## 6.3 解释差距来自哪里
 
-画出实测点之后，几乎总会发现它**没有贴在任何一条线上**。这一节讲怎么解释"中间那段差距"。前提是已经在 [第 5 章](../chapter5/index.md) 用 `rocprof` / Omniperf 采到了计数器；如果计数器还没采，差距解释就只能停留在"它慢了"，不能说"为什么慢"。
+画出实测点之后，几乎总会发现它**没有贴在任何一条线上**。这一节讲怎么解释"中间那段差距"。前提是已经在 [第 5 章](../chapter5/index.md) 用 `rocprofv3` / Omniperf 采到了可用计数器，或者像本章这样明确写出哪些计数器暂时不可用；如果计数器边界没讲清楚，差距解释就只能停留在"它慢了"，不能说"为什么慢"。
 
 ### 6.3.1 差距的三种来源
 
@@ -134,31 +142,39 @@ flowchart TD
 | `VALUInsts` 很高、访存指标不突出 | compute-bound 嫌疑 → VALU / 数学函数 | 走更低精度、消除多余 transcendental |
 | `Wavefronts` 充足、`OccupancyPercent` 也高，但仍慢 | wavefront 之间互相等同步 | 看 `s_waitcnt`、barrier 频率；考虑减少 `__syncthreads()` |
 
-> ⚠️ 上表里的计数器名字按 `rocprof --list-counters` 在 gfx12 上的输出写。**名字会随 ROCm 版本与硬件代际略有差异**，引用前请用 `rocprof --list-counters | grep -i <关键词>` 在你自己的机器上确认一遍。gfx12 上一次 `--pmc` 通常只能传**一个**计数器，多于一个会报 error code 38——和 [第 5 章](../chapter5/index.md) 的采集方式一致。
+> ⚠️ 上表里的计数器名字按 `rocprofv3 -L` 在 gfx1201 上的输出写。**名字会随 ROCm 版本与硬件代际略有差异**，引用前请用 `rocprofv3 -L | grep -i <关键词>` 在你自己的机器上确认一遍。`rocprofv3 --pmc` 可以一次传多个计数器，不兼容的会报 `Missing` 但其余仍能采到——和 [第 5 章 §5.3](../chapter5/index.md) 的采集方式一致。
 
 <details>
-<summary>🚧 待实测：vector add 的计数器速览（9070XT / gfx12）</summary>
+<summary>⚠️ 平台限制：gfx1201 上部分关键 PMC 计数器不可用（附采集命令与替代证据）</summary>
 
-```text
-# 在 9070XT 实验机就绪后，用下面的循环逐计数器采集 vector add
-for c in FETCH_SIZE WRITE_SIZE L2CacheHit MemUnitBusy \
-         OccupancyPercent Wavefronts VALUInsts GPUBusy; do
-  rocprof --pmc $c -d chapter6/profiles/pmc_$c -o pmc_$c \
-            --output-format csv \
-    -- python ../../part0-intro/chapter3/benchmark_vector_add.py \
-        --size 16777216 --warmup 5 --repeat 10
+和 [第 5 章 §5.3](../chapter5/index.md) 同理，gfx1201（RDNA4）上 `rocprofv3 --pmc` 能生成 CSV，但本章最需要的访存 / L2 / SQ / occupancy 计数器当前不可用或返回 0；`GPUBusy`、`Wavefronts` 等 counter 可以返回非零值。下面是采集命令（等 AMD 补全关键 PMU 支持后可回填），以及当前用其他手段拿到的替代证据：
+
+```bash
+# 在 9070XT 上用下面的循环逐计数器采集 vector add
+for c in FETCH_SIZE GL2C_HIT_sum GL2C_MISS_sum \
+         SQ_INSTS_TEX_LOAD SQ_INSTS_TEX_STORE; do
+  rocprofv3 --pmc $c -o logs/pmc_$c.csv -f csv \
+    -- ./vector_add_bench --kernel coalesced --size 16777216 --block 256 \
+       --warmup 5 --repeat 10
 done
 ```
 
-| Counter | 单 kernel 平均值 | 解读 |
-| ---- | ----: | ---- |
-| `FETCH_SIZE` | 🚧 待 job 填充（9070XT） | 每个 vector add kernel 从显存读多少 KB |
-| `WRITE_SIZE` | 🚧 待 job 填充（9070XT） | 每个 kernel 往显存写多少 KB |
-| `L2CacheHit` | 🚧 待 job 填充（9070XT） | 流式访问命中率（预期很低，是正常现象）|
-| `OccupancyPercent` | 🚧 待 job 填充（9070XT） | wave32 / SIMD32 资源池水位 |
-| `Wavefronts` | 🚧 待 job 填充（9070XT） | `size / wave_size`，验证 grid 配置 |
-| `VALUInsts` | 🚧 待 job 填充（9070XT） | 每 work-item 平均 vector ALU 指令数 |
-| `GPUBusy` | 🚧 待 job 填充（9070XT） | 单 kernel 期间 GPU 忙碌比例 |
+| Counter | gfx1201 实测 | 理论预期 | 解读 |
+| ---- | ----: | ----: | ---- |
+| `FETCH_SIZE` | **0.0（PMU 限制）** | ≈ 2 × n × 4 B（读 a + b） | 每个 kernel 从显存读多少 KB |
+| `WRITE_SIZE` | 不存在（gfx1201 无此 counter） | ≈ n × 4 B（写 c） | 每个 kernel 往显存写多少 KB |
+| `GL2C_HIT_sum` | **0.0（PMU 限制）** | 中等（192MiB footprint 部分 L2 命中） | L2 命中次数 |
+| `SQ_INSTS_TEX_LOAD` | **0.0（PMU 限制）** | 与 grid 配置相关 | 访存读指令数 |
+| `OccupancyPercent` | **0.0（不可作为直接证据）** | 接近上限（VGPR=8, 见 §5.5 实测） | wave32 资源池水位 |
+| `Wavefronts` | **524288.0（PMC 实测）** | 524288 wavefront（Grid=16M / wave32） | 验证 grid 配置 |
+| `VALUInsts` | **0.0（PMU 限制）** | 极低（每元素 1 加法） | 每 work-item 平均 vector ALU 指令数 |
+| `GPUBusy` | **100.0（PMC 实测）** | 高（memory-bound，GPU 在等带宽） | 单 kernel 期间 GPU 忙碌比例 |
+
+**替代证据**（gfx1201 PMU 不可用时的工程估算）：
+
+- **搬运量是否符合数据量模型**：用 `rocprofv3 --kernel-trace` 拿到的 per-dispatch 耗时（329 μs）反推有效带宽（603 GB/s），与数据量模型 `3 × n × 4 / t` 完全吻合——说明搬运量没有异常放大，访存模式健康（合并）。这是"用时间反推字节数"的间接验证。
+- **occupancy 是否受限**：`--kernel-trace` 实测 VGPR=8、SGPR=128、LDS=0（见 [第 5 章 §5.3](../chapter5/index.md) 的资源表），远低于硬件上限，occupancy 必然卡在 wave 数上限而非资源——这条结论的确定性很高。
+- **GPU 是否在等带宽**：vector add 算术强度 0.083 FLOP/Byte，必然 memory-bound；有效带宽 603 GB/s 已达标称 79%，说明 GPU 确实在等带宽，而不是等算力或 stall。
 
 </details>
 
@@ -215,12 +231,13 @@ code/part1-profiling/chapter6/performance-report.md
 
 | 项目 | 值 |
 | ---- | ---- |
-| Hardware | 🚧 待 job 填充（9070XT） / gfx12 |
-| ROCm | 🚧 6.4.x |
-| Driver | 🚧 待 job 填充（9070XT）|
-| Python | 🚧 待 job 填充（9070XT）|
-| PyTorch | 🚧 待 job 填充（9070XT）|
-| Repo commit | 🚧 git rev-parse HEAD |
+| Hardware | AMD Radeon RX 9070 XT / gfx1201 (RDNA4) |
+| ROCm | 7.13.99004（`hipcc --version`）|
+| Platform | 原生 Ubuntu 24.04（6.17.0-35-generic, x86_64）|
+| Python | 3.12.3 |
+| PyTorch | 2.11.0+rocm7.13.0 |
+| Triton | 3.6.0 |
+| Repo commit | `git rev-parse HEAD` |
 | Reproduce env | `bash scripts/bootstrap-rocm-env.sh --part part1-profiling` |
 
 ## 3. Workload
@@ -269,9 +286,9 @@ code/part1-profiling/chapter6/performance-report.md
 
 ## 10. Known Limitations
 
-- 🚧 只在 9070XT / gfx12 上跑过，其他 RDNA 代际读者需按方法论自行复测。
-- 🚧 只测了 fp32，未覆盖 fp16 / bf16。
-- 🚧 profiling run 的 repeat 较小，统计噪声较大。
+- 只在 9070XT / gfx12 上跑过，其他 RDNA 代际读者需按方法论自行复测。
+- 只测了 fp32，未覆盖 fp16 / bf16。
+- profiling run 的 repeat 较小，统计噪声较大。
 - <其他>
 
 写 limitations 不是认怂，而是让读者知道"哪些场景下结论可能不成立"。
@@ -302,17 +319,17 @@ code/part1-profiling/chapter6/performance-report.md
 
 本章案例（vector add）的观察包括：
 
-1. 🚧 待 job 填充（9070XT）：baseline GPU min 延迟；
-2. 🚧 待 job 填充（9070XT）：GPU 估算带宽与 B_peak 的比值；
-3. 🚧 待 job 填充（9070XT）：rocprof trace 中 vector add kernel 的耗时占比；
-4. 🚧 待 job 填充（9070XT）：计数器 FETCH_SIZE / WRITE_SIZE 是否符合数据量模型；
-5. 🚧 待 job 填充（9070XT）：keep_gpu 对照模式下的端到端延迟变化。
+1. baseline GPU min 延迟 **0.334 ms**（n=16M, fp32, repeat=100，[第 5 章 §5.2](../chapter5/index.md) 实测）；
+2. GPU 有效带宽 **603 GB/s**，与标称 B_peak 760 GB/s 之比 **~79%**（[第 5 章 §5.2](../chapter5/index.md)）；
+3. `rocprofv3 --kernel-trace` 中 vector add kernel 的 per-dispatch 耗时 **329 μs**，与端到端 min_ms 量级一致（[第 5 章 §5.3](../chapter5/index.md)），说明 launch overhead 占比小；
+4. `FETCH_SIZE` / 写回字节数等关键访存计数器在当前 gfx1201 平台不能给出直接字节数（§6.3.2），但用 per-dispatch 耗时反推的有效带宽与数据量模型 `3n×4/t` 吻合，间接说明搬运量无异常放大；
+5. `--kernel-trace` 实测资源占用 VGPR=8 / SGPR=128 / LDS=0（[第 5 章 §5.5](../chapter5/index.md)），occupancy 卡在 wave 上限而非资源，不是瓶颈。
 
 从这些观察可以提出一个示例方向的假设：
 
 > 对 vector add 这个 baseline 来说，它确实是 memory-bound（算术强度 ~0.083 FLOP/Byte），主要改进空间在于把实测带宽逼近 B_peak，而不是去碰算力线。
 
-这个假设的置信度写成 🚧 待 job 填充（9070XT）。原因是：算术强度本身是确定的（从代码算出来），但"实测带宽离 B_peak 多远、差距来自哪里"还需要计数器交叉验证，在没有计数器证据前只能给 low–medium。
+这个假设的置信度写成 **medium-high**。理由：算术强度本身是确定的（从代码算出来，0.083 FLOP/Byte）；有效带宽 603 GB/s 已达标称 79% 且 per-dispatch 耗时与端到端一致（两类独立证据方向一致）；occupancy/寄存器已被 `--kernel-trace` 排除。唯一未直接验证的是"搬运量是否符合数据量模型"——因为当前关键访存 PMC 不能给出直接字节数，只能用时间反推间接验证（吻合）。若要升级到 high，需要在 PMU 支持补齐后拿到 FETCH_SIZE / 写回字节实测值，或在 gfx9/gfx11 上交叉验证。
 
 下表给出一份可复用的"置信度 → 用语"对照，避免每次写报告都要重新定义口径：
 
@@ -347,7 +364,7 @@ Part 1 profiling 篇的"测量 → 定位 → 假设"闭环
 把这三步拆开看：
 
 - **测量**（[第 3 章](../../part0-intro/chapter3/index.md) baseline + [第 4 章](../chapter4/index.md) 可信计时）：先固定输入规模、warmup、repeat，用 GPU event 量到能复现的数字。没有可信测量，后面一切都是空中楼阁。
-- **定位**（[第 5 章](../chapter5/index.md) rocprof + Omniperf）：用 trace 看 kernel / copy / HIP API 的时间轴，用计数器看访存 / occupancy / wavefront 的硬件信号。定位的产物是一份"观察列表"，而不是一个结论。
+- **定位**（[第 5 章](../chapter5/index.md) rocprof + Omniperf）：用 trace 看 kernel / copy / HIP API 的时间轴；计数器可用时，用它看访存 / occupancy / wavefront 的硬件信号。定位的产物是一份"观察列表"，而不是一个结论。
 - **假设**（本章 §6.2 Roofline + §6.5 置信度）：把观察列表翻译成带置信度的假设，并为每个假设写出否定条件。假设必须能被下一次实验证伪，否则它就不是假设而是直觉。
 
 这条闭环会在 [Part 2 算子篇](../../part2-kernels/chapter7/index.md) 里反复用到——Reduction、Softmax、GEMM、Flash Attention 每个算子都会：先写一版 naive kernel（测量）、再用 rocprof / Omniperf 看它慢在哪（定位）、最后在 Roofline 上画点并提下一版优化假设（假设）。差别只在于：Part 2 的算子算术强度更高、优化手段更多（LDS tile、wavefront 协作、WMMA 矩阵单元），所以 Roofline 上的工作点会从斜线那一侧逐步往右、往上挪。

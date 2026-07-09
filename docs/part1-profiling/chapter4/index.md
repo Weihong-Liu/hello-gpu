@@ -139,7 +139,7 @@ GPU 任务通常是**异步提交**的：你在 host 端调用 `torch.softmax(x)
 # code/part1-profiling/chapter4/bench_torch_op.py
 # 用法：python bench_torch_op.py --shape 4096,4096 --dtype fp16 --repeats 200
 # 目标：演示一个可信的 PyTorch 算子 benchmark（示例算子可换成任意 op）
-# 硬件上下文：Radeon RX 9070 XT + ROCm 6.4.x  🚧 数字待实测
+# 硬件上下文：Radeon RX 9070 XT + ROCm 7.13（实测见下方 §4.4 结果表）
 import argparse
 import statistics
 import torch
@@ -183,7 +183,6 @@ if __name__ == "__main__":
     dtype = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp32": torch.float32}[args.dtype]
 
     stats = bench(shape, dtype, args.repeats)
-    # 🚧 数字待 9070XT + ROCm 6.4.x 实测
     print(f"shape={shape} dtype={args.dtype} stats={stats}")
 ```
 
@@ -206,7 +205,7 @@ if __name__ == "__main__":
 # code/part1-profiling/chapter4/bench_triton_copy.py
 # 用法：python bench_triton_copy.py --n 16777216 --repeats 200
 # 目标：用最简单的 copy kernel 验证 benchmark 流程，并估算有效带宽
-# 硬件上下文：Radeon RX 9070 XT + ROCm 6.4.x  🚧 数字待实测
+# 硬件上下文：Radeon RX 9070 XT + ROCm 7.13（实测见下方 §4.4 结果表）
 import argparse
 import torch
 import triton
@@ -251,8 +250,6 @@ if __name__ == "__main__":
     p.add_argument("--repeats", type=int, default=200)
     args = p.parse_args()
     ms, gbps = bench(args.n, args.repeats)
-    # 🚧 数字待 9070XT + ROCm 6.4.x 实测：
-    # 大 n（远超 L2 容量）下应接近 GDDR6 实测带宽（标称 ~760 GB/s，以实测为准）
     print(f"n={args.n} time={ms:.3f} ms eff_bw={gbps:.2f} GB/s")
 ```
 
@@ -275,7 +272,7 @@ if __name__ == "__main__":
 // code/part1-profiling/chapter4/bench_hip.cpp
 // 用法：hipcc -O3 bench_hip.cpp -o bench_hip && ./bench_hip
 // 目标：HIP event 最小计时模板
-// 硬件上下文：Radeon RX 9070 XT + ROCm 6.4.x  🚧 数字待实测
+// 硬件上下文：Radeon RX 9070 XT + ROCm 7.13（实测见下方 §4.4 结果表）
 #include <hip/hip_runtime.h>
 #include <cstdio>
 
@@ -307,7 +304,6 @@ int main() {
 
     float ms = 0.f;
     hipEventElapsedTime(&ms, s, e);
-    // 🚧 数字待 9070XT + ROCm 6.4.x 实测
     printf("avg per launch = %.4f ms\n", ms / repeats);
 
     hipFree(d);
@@ -323,33 +319,50 @@ int main() {
 - 一定要 `hipEventSynchronize` 之后再读 elapsed time，否则 host 还在拿着 stale 值；
 - [第 5 章](../chapter5/index.md) 会把这个骨架挂到 rocprof / PyTorch Profiler 上做完整链路。
 
-### 实测数字（Radeon RX 9070 XT + ROCm 6.4.x）
+### 实测数字（Radeon RX 9070 XT + ROCm 7.13）
 
-下面这张表是用上面三段骨架在 9070XT 上跑出来的实测值（机器就绪后回填）：
+下面这张表是用 [`bench_ch4.py`](https://github.com/datawhalechina/hello-gpu/blob/dev/code/part1-profiling/chapter4/bench_ch4.py)（综合了上面骨架 A / B 两段流程）在 9070XT（gfx1201 / ROCm 7.13 / 原生 Ubuntu 24.04）上跑出来的实测值：
+
+> **环境提醒**：骨架 B 用到 Triton，Triton JIT 编译 driver 时需要 `Python.h`。这是系统开发头文件，不是 Python wheel，`uv sync` 装不了。原生 Ubuntu 最小安装缺这个包，实验机初始化时先执行 `sudo apt install -y build-essential libstdc++-14-dev python3-dev`（详见仓库内 `.docs-rules/03-environment.md` §3，该文件不随站点发布）。
 
 <details>
-<summary>🚧 待实测：三段骨架在 9070XT + ROCm 6.4.x 上的输出</summary>
+<summary>实测输出：Ch4 benchmark @ 9070XT + ROCm 7.13（原生 Ubuntu 24.04）</summary>
 
-| 实验 | 算子 / 公式 | shape / dtype | median 时延 | 有效带宽 | 算术强度 |
+下表是用 `bench_ch4.py` 在 9070XT（gfx1201 / ROCm 7.13 / 原生 Ubuntu 24.04）上的实测值：
+
+| 实验 | 算子 / 公式 | shape / dtype | 时延（median / min） | 有效带宽 | 算术强度 |
 | ---- | ---- | ---- | ----: | ----: | ----: |
-| 骨架 A — PyTorch vector add | `c = a + b` | 4096² / fp32 | 🚧 待 job 填充（9070XT） | 🚧 待 job 填充（9070XT） | ~0.083 FLOP/B |
-| 骨架 A — PyTorch vector add | `c = a + b` | 4096² / fp16 | 🚧 待 job 填充（9070XT） | 🚧 待 job 填充（9070XT） | ~0.17 FLOP/B |
-| 骨架 B — Triton vector copy | `y = x` | 8 MiB（pair） | 🚧 待 job 填充（9070XT） | 🚧 待 job 填充（9070XT） | — |
-| 骨架 B — Triton vector copy | `y = x` | 64 MiB（pair） | 🚧 待 job 填充（9070XT） | 🚧 待 job 填充（9070XT） | — |
-| 骨架 B — Triton vector copy | `y = x` | 256 MiB（pair） | 🚧 待 job 填充（9070XT） | 🚧 待 job 填充（9070XT） | — |
+| 骨架 A — PyTorch vector add | `c = a + b` | 4096² / fp32 | 0.337 / 0.335 ms | 600.8 GB/s | ~0.083 FLOP/B |
+| 骨架 A — PyTorch vector add | `c = a + b` | 4096² / fp16 | 0.173 / 0.171 ms | 587.3 GB/s | ~0.17 FLOP/B |
+| 骨架 B — Triton vector copy | `y = x` | 8 MiB（pair） | 0.020 ms（min） | 785.1 GB/s | — |
+| 骨架 B — Triton vector copy | `y = x` | 64 MiB（pair） | 0.223 ms（min） | 572.8 GB/s | — |
+| 骨架 B — Triton vector copy | `y = x` | 256 MiB（pair） | 0.900 ms（min） | 568.6 GB/s | — |
 
 ```text
-（机器就绪后在此粘贴实际输出。预期：vector add 的有效带宽随 footprint 增大先升后稳，
-踩进 GDDR6 平台后接近标称 ~760 GB/s 的某个比例；fp16 vs fp32 时间应接近砍半，
-但有效带宽几乎不变——因为省的是 byte 数，算术强度跟着翻倍。）
+GPU: AMD Radeon RX 9070 XT
+torch: 2.11.0+rocm7.13.0
+hipcc: 7.13.99004 / arch gfx1201 / 原生 Ubuntu 24.04 (6.17.0-35-generic)
+
+--- 骨架 A：PyTorch vector add (4096×4096) ---
+ dtype |    min_ms |  median_ms |     GB/s
+  fp32 |   0.335 ms |    0.337 ms |   600.8
+  fp16 |   0.171 ms |    0.173 ms |   587.3
+
+--- 骨架 B：Triton vector copy (float32) ---
+   footprint |    min_ms |     GB/s
+        8 MiB |   0.020 ms |   785.1
+       64 MiB |   0.223 ms |   572.8
+      256 MiB |   0.900 ms |   568.6
 ```
+
+> 时延口径：vector add 用 GPU event 逐次计时，同时报告 min 与 median；vector copy 用「一段 event 覆盖 200 次连续 launch 后求平均」，列出的就是单次平均（≈ min）。原始日志见 `code/part1-profiling/chapter4/logs/`。有效带宽的口径：vector add 按 `3 × elems × dtype` 字节（两读一写），vector copy 按 `2 × footprint` 字节（一读一写）。
 
 </details>
 
-读这张表的关键点（机器就绪后用实测值验证）：
+读这张表的关键点：
 
-- **memory-bound 算子的「快」上限就是带宽**：vector add 在 fp32 / fp16 下有效带宽应当接近——同样的 fp16 vs fp32 对比，时间砍半但带宽几乎不变，印证了直觉表里「改 dtype 之后吞吐翻倍 ≠ 真省了带宽」那一条；fp16 真省到的是 byte 数，算术强度也跟着翻倍。
-- **vector copy 的 footprint 扫描能画出 cache 层级**：小 footprint 落在 L2 命中区会偏快，大 footprint 全进 GDDR6 后会跌到一个稳定平台。这条曲线就是后面所有 memory-bound 算子要参照的带宽线。
+- **memory-bound 算子的「快」上限就是带宽**：vector add 在 fp32 / fp16 下有效带宽几乎一致（600.8 vs 587.3 GB/s），但 fp16 的时间只有 fp32 的约一半（0.171 vs 0.335 ms）——这正是直觉表里「改 dtype 之后吞吐翻倍 ≠ 真省了带宽」那条的实测印证。fp16 真省到的是 byte 数，算术强度（FLOP/B）跟着翻倍。
+- **vector copy 的 footprint 扫描能画出 cache 层级**：8 MiB 时有效带宽冲到 785.1 GB/s（落在 L2 命中区，数据基本没往返 GDDR6），64 MiB 以后跌到 ~570 GB/s 并稳定下来——这就是踩进 GDDR6 平台后的真实带宽。这条曲线就是后面所有 memory-bound 算子要参照的带宽线。
 
 > 太小的输入（几 MiB 以下）测出来的不是带宽峰值，是 launch overhead——每次 copy 真正干活只有几 μs，被启动开销稀释。太大的输入又只能看到 GDDR6 平台。要看 cache 层级必须跑 footprint 扫描，而不是只跑一个 size。
 
