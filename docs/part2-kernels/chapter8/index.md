@@ -96,7 +96,7 @@ __global__ void softmax_v0_pass2_expsum(const float* x, float* exp_out,
 
 v0 的全局内存流量是理论最优的 **2.5 倍**。对于访存密集型算子，这个浪费直接影响端到端延迟。
 
-**实测（9070XT + ROCm 6.4.x，B=8 S=2048）**：🚧 待 job 填充（9070XT）—— v0 的 min_ms / 等效带宽，待 Radeon RX 9070 XT + ROCm 6.4.x（Linux）实测后填入；可参照 Part 1（Ch4-6）profiling 章节给出的稳态 vector add 带宽基线。
+**实测（9070XT + ROCm 7.13 / 原生 Ubuntu 24.04，B=8 S=2048）**：🚧 待 job 填充（9070XT）—— v0 的 min_ms / 等效带宽，待 Radeon RX 9070 XT + ROCm 7.13 / 原生 Ubuntu 24.04 实测后填入；可参照 Part 1（Ch4-6）profiling 章节给出的稳态 vector add 带宽基线。
 
 数据出处：`code/part2-kernels/chapter8/logs/bench_summary.csv`。
 
@@ -310,7 +310,7 @@ __global__ void softmax_v3_kernel(const float* __restrict__ x,
 }
 ```
 
-**实测（9070XT + ROCm 6.4.x，min_ms / 等效 GB/s）**：🚧 待 job 填充（9070XT）
+**实测（9070XT + ROCm 7.13 / 原生 Ubuntu 24.04，min_ms / 等效 GB/s）**：🚧 待 job 填充（9070XT）
 
 | 形状 | v2 (合并 LDS) | v3 (float4) | v3/v2 加速 |
 | ---- | ----: | ----: | ----: |
@@ -399,7 +399,7 @@ def softmax_triton(x):
 
 上面这个教学版要求 `BLOCK >= n_cols`。当行很长（例如 $S = 65536$）时，单 program 装不下整行，需要写**在线 softmax（online softmax）**分块版本：分多个 tile 滚动维护 `(running_max, running_sum)`，每个 tile 更新这两个统计量，最后做一次归一化。这套技巧正是第10章 Flash Attention 的基础——Triton 在这件事上比 HIP 易写得多。
 
-> 💡 **实测对照**：Triton 版 softmax 在 9070XT + ROCm 6.4.x 上的 min_ms / 等效带宽：🚧 待 job 填充（9070XT）。预期它会接近（但不一定超过）本章手写 v3，因为编译器同样能选择 128-bit 向量化宽度。
+> 💡 **实测对照**：Triton 版 softmax 在 9070XT + ROCm 7.13 / 原生 Ubuntu 24.04 上的 min_ms / 等效带宽：🚧 待 job 填充（9070XT）。预期它会接近（但不一定超过）本章手写 v3，因为编译器同样能选择 128-bit 向量化宽度。
 
 ## 8.7 与 PyTorch 结果对齐
 
@@ -412,7 +412,7 @@ def softmax_triton(x):
 
 ### 8.7.2 期望误差
 
-**实测（9070XT + ROCm 6.4.x，B=8 S=2048，参考 = `torch.softmax(fp32)`）**：🚧 待 job 填充（9070XT）
+**实测（9070XT + ROCm 7.13 / 原生 Ubuntu 24.04，B=8 S=2048，参考 = `torch.softmax(fp32)`）**：🚧 待 job 填充（9070XT）
 
 | 版本 | max_diff | mean_diff | rel_err | 行和偏差 | 状态 |
 | ---- | ----: | ----: | ----: | ----: | ---- |
@@ -438,7 +438,7 @@ def softmax_triton(x):
 
 ### 8.8.2 性能数据
 
-**实测（9070XT + ROCm 6.4.x）**：🚧 待 job 填充（9070XT）
+**实测（9070XT + ROCm 7.13 / 原生 Ubuntu 24.04）**：🚧 待 job 填充（9070XT）
 
 | 形状 | v0 | v1 | v2 | v3 |
 | ---- | ---: | ---: | ---: | ---: |
@@ -473,7 +473,7 @@ def softmax_triton(x):
 - v2（单 kernel，LDS 归约合并）把三个独立 kernel 压缩成一个，消除中间缓冲区，全局内存读写次数从 5 遍降到 3 遍。
 - v3（单 kernel，float4 向量化）在 v2 基础上用 128-bit 向量化内存事务减少 load/store 指令发射次数。
 - Triton 版本用 block 级向量编程把 LDS 归约、同步、向量化都交给编译器；长行场景需要写在线 softmax 分块版，这是第10章 Flash Attention 的基础。
-- 实测性能数据待在 Radeon RX 9070 XT + ROCm 6.4.x（Linux）上补齐（🚧 待 job 填充），数据出处 `code/part2-kernels/chapter8/logs/`。
+- 实测性能数据待在 Radeon RX 9070 XT + ROCm 7.13 / 原生 Ubuntu 24.04 上补齐（🚧 待 job 填充），数据出处 `code/part2-kernels/chapter8/logs/`。
 - 下一章（第9章 GEMM）进入矩阵乘法，它把分块（tiling）与 LDS 复用推向更复杂的二维结构；第10章 Flash Attention 则会把本章的 softmax 与 GEMM 融合成一个算子。
 
 ## 延伸阅读

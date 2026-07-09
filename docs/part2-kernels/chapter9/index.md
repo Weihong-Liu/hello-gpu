@@ -31,7 +31,7 @@ FLOP = 2 × M × N × K
 
 举例：M=N=K=4096 时，FLOP ≈ 2 × 4096³ ≈ 137 × 10⁹，即约 137 GFLOP。
 
-> 🚧 待 job 填充（9070XT）：9070XT 的 fp32 理论峰值 TFLOPS（不走 WMMA 时）以及 137 GFLOP 在该峰值下应有的目标耗时，需在 Radeon RX 9070 XT + ROCm 6.4.x（Linux）上实测确认。
+> 🚧 待 job 填充（9070XT）：9070XT 的 fp32 理论峰值 TFLOPS（不走 WMMA 时）以及 137 GFLOP 在该峰值下应有的目标耗时，需在 Radeon RX 9070 XT + ROCm 7.13 / 原生 Ubuntu 24.04 上实测确认。
 
 ### 为什么朴素实现远不够快
 
@@ -81,7 +81,7 @@ __global__ void gemm_v0_naive(
 
 此外，每个线程独立读取 A 和 B，没有任何共享，同一行的 A 数据被 N 个线程分别读了 N 遍。
 
-> 🚧 待 job 填充（9070XT）：M=N=K ∈ {512,1024,2048,4096} 的 v0 耗时 / TFLOPS / 占理论峰值百分比，需在 9070XT + ROCm 6.4.x（Linux）上实测。
+> 🚧 待 job 填充（9070XT）：M=N=K ∈ {512,1024,2048,4096} 的 v0 耗时 / TFLOPS / 占理论峰值百分比，需在 9070XT + ROCm 7.13 / 原生 Ubuntu 24.04 上实测。
 
 ## 9.3 Tiling — 矩阵拆块，数据复用第一步
 
@@ -178,7 +178,7 @@ __global__ void gemm_v1_lds(
 
 两个 `__syncthreads()` 缺一不可：第一个等 tile 加载完，第二个保护下一轮覆盖写入。
 
-> 🚧 待 job 填充（9070XT）：v0 → v1 的 TFLOPS 提升（预期是本章单步收益最大的一次优化），需在 9070XT + ROCm 6.4.x（Linux）上实测。
+> 🚧 待 job 填充（9070XT）：v0 → v1 的 TFLOPS 提升（预期是本章单步收益最大的一次优化），需在 9070XT + ROCm 7.13 / 原生 Ubuntu 24.04 上实测。
 
 ## 9.5 Register Blocking — 每线程多输出，寄存器复用
 
@@ -285,13 +285,13 @@ __global__ void gemm_v3_reg_blocking(
 
 </details>
 
-> 🚧 待 job 填充（9070XT）：v3 各形状的耗时 / TFLOPS / 占峰值百分比 / 相对 rocBLAS 的比例。注意 v3 是否反超 rocBLAS，取决于 9070XT + ROCm 6.4.x 上 rocBLAS 的 fp32 路径是否走 WMMA——这一点必须实测确认，不能照搬任何其它硬件的结论。
+> 🚧 待 job 填充（9070XT）：v3 各形状的耗时 / TFLOPS / 占峰值百分比 / 相对 rocBLAS 的比例。注意 v3 是否反超 rocBLAS，取决于 9070XT + ROCm 7.13 / 原生 Ubuntu 24.04 上 rocBLAS 的 fp32 路径是否走 WMMA——这一点必须实测确认，不能照搬任何其它硬件的结论。
 
 ## 9.6 简化版高性能 GEMM — 组合优化
 
 v4 在 v3 的基础上：把 tile 尺寸放大到 `128×128`，增大 BLOCK_K 到 32，把 register blocking 扩展到 TM=TN=8（每线程 64 个输出元素），加入 LDS bank conflict padding。
 
-> 🚧 待 job 填充（9070XT）：v4 各形状的耗时 / TFLOPS / 占峰值百分比，重点观察"把 tile 推到 128×128 + TM=TN=8 后寄存器压力是否触及 occupancy 上限"，需在 9070XT + ROCm 6.4.x（Linux）上实测。
+> 🚧 待 job 填充（9070XT）：v4 各形状的耗时 / TFLOPS / 占峰值百分比，重点观察"把 tile 推到 128×128 + TM=TN=8 后寄存器压力是否触及 occupancy 上限"，需在 9070XT + ROCm 7.13 / 原生 Ubuntu 24.04 上实测。
 
 ## 9.7 Triton 版本对比 — tile 表达的简洁性
 
@@ -349,18 +349,18 @@ def matmul_kernel(
 
 读这段代码时，把它和 HIP v3 对照：`tl.load` = 协作加载 tile 到 LDS，`tl.dot` = register blocking 的 `TM×TN` 外积 + WMMA，`acc` = 那个 `float acc[TM][TN]` 数组。**Triton 没有省掉任何优化思路，只是把它们从"手写"变成了"声明"。**
 
-> 🚧 待 job 填充（9070XT）：Triton 版（autotune 选出最佳配置后）与 HIP v3/v4、rocBLAS 的对比，需在 9070XT + ROCm 6.4.x（Linux）上实测。重点看 Triton autotune 选出的 BLOCK_M/N/K 是否与手写 v4 的最优配置接近。
+> 🚧 待 job 填充（9070XT）：Triton 版（autotune 选出最佳配置后）与 HIP v3/v4、rocBLAS 的对比，需在 9070XT + ROCm 7.13 / 原生 Ubuntu 24.04 上实测。重点看 Triton autotune 选出的 BLOCK_M/N/K 是否与手写 v4 的最优配置接近。
 
 ## 9.8 与 rocBLAS 对比 — 只观察差距和方向
 
 rocBLAS 代表了当前软件栈能达到的上限（RDNA4 上内部用 WMMA）。我们的目的不是打败 rocBLAS，而是看清距离上限还有多少差距。
 
-> 🚧 待 job 填充（9070XT）：v0–v4 + rocBLAS 在 M=N=K ∈ {512,1024,2048,4096} 上的 TFLOPS 对比表。需在 9070XT + ROCm 6.4.x（Linux）上跑 `code/part2-kernels/chapter9/` 下的 benchmark，数据放进 `logs/`。
+> 🚧 待 job 填充（9070XT）：v0–v4 + rocBLAS 在 M=N=K ∈ {512,1024,2048,4096} 上的 TFLOPS 对比表。需在 9070XT + ROCm 7.13 / 原生 Ubuntu 24.04 上跑 `code/part2-kernels/chapter9/` 下的 benchmark，数据放进 `logs/`。
 
 **差距分析的方向**：
 
 - **v0 → v1 的提升通常最大**：LDS 把全局内存访问减少 `BLOCK_M` 倍。
-- **v4 距离 rocBLAS 的差距**：rocBLAS 会用 WMMA 等专用矩阵指令把 SIMD 教学版甩在后面。在 9070XT（gfx12）+ ROCm 6.4.x 这条路径上，rocBLAS 的 fp32 路径到底走不走 WMMA、教学版 register-blocking 有没有可观察的反超空间，都必须实测确认。
+- **v4 距离 rocBLAS 的差距**：rocBLAS 会用 WMMA 等专用矩阵指令把 SIMD 教学版甩在后面。在 9070XT（gfx1201）+ ROCm 7.13 / 原生 Ubuntu 24.04 这条路径上，rocBLAS 的 fp32 路径到底走不走 WMMA、教学版 register-blocking 有没有可观察的反超空间，都必须实测确认。
 
 ## 9.9 思考题
 

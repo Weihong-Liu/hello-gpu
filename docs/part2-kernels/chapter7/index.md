@@ -419,7 +419,7 @@ def reduce_kernel(x_ptr, out_ptr, N, BLOCK: tl.constexpr):
 
 这一节展示五个版本在不同输入规模下的实测带宽（GB/s）和 bandwidth utilization（相对理论峰值带宽的比例）。
 
-**实测（9070XT + ROCm 6.4.x，block=256，warmup=5，repeat=20）**。
+**实测（9070XT + ROCm 7.13 / 原生 Ubuntu 24.04，block=256，warmup=5，repeat=20）**：🚧 待 job 填充（9070XT）。
 
 ### 7.8.1 有效带宽对比表
 
@@ -478,7 +478,7 @@ def reduce_kernel(x_ptr, out_ptr, N, BLOCK: tl.constexpr):
 - v3（unrolled + 向量化加载）让每个线程处理多个元素，提升内存带宽利用率，是单次 kernel 性能通常最高的版本。
 - v4（两阶段 Reduction）通过中间缓冲区彻底消除跨 block 的原子争用，适合超大规模输入或对数值精度有要求的场景。
 - Triton 用 `tl.sum` 等原语把 v1+v2 的协作机制交给编译器，但 v3/v4 这类更激进的优化仍需显式描述。
-- 性能验证的完整数据将在 9070XT + ROCm 6.4.x 上实测补齐（见 §7.8 表格与 `code/part2-kernels/chapter7/logs/`）。
+- 性能验证的完整数据将在 9070XT + ROCm 7.13 / 原生 Ubuntu 24.04 上实测补齐（见 §7.8 表格与 `code/part2-kernels/chapter7/logs/`）。
 - 下一章（第8章 Softmax）把 reduction、数值稳定性和访存优化串起来，会综合运用本章的 LDS 归约树思路。
 
 ## 延伸阅读

@@ -11,7 +11,7 @@
 本教程不是简单介绍工具，而是希望帮助读者建立 GPU 工程的核心思维：
 **以硬件为起点，以 profiling 为证据，以优化为手段，以 Agent 自动化为终点。**
 
-> Alpha 阶段所有实验默认以 **AI MAX 395 + ROCm 7.12.0** 为基线。其他 AMD GPU 可以参考方法论，但性能数字和工具可用性需要单独实测确认。
+> Alpha 阶段所有实验默认以 **Radeon RX 9070 XT + ROCm 7.13 + 原生 Ubuntu 24.04** 为基线。其他 AMD GPU 可以参考方法论，但性能数字和工具可用性需要单独实测确认。
 
 ## 项目受众
 
@@ -35,7 +35,7 @@ https://datawhalechina.github.io/hello-gpu/
 | ---- | ---- | ---- |
 | **第 0 篇：入门与硬件速通** | | |
 | [第 0 章 写给读者的话](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part0-intro/chapter0/index.md) | 教程定位、为什么选 9070XT、和市面教程差异、学习路线 | 🚧 |
-| [第 1 章 环境准备](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part0-intro/chapter1/index.md) | 9070XT + Linux + ROCm 6.4 验证、Windows 劝退、uv 环境、最小 smoke test | 🚧 |
+| [第 1 章 环境准备](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part0-intro/chapter1/index.md) | 9070XT + 原生 Ubuntu + ROCm 7.13 验证、Windows/WSL2 边界、uv 环境、最小 smoke test | 🚧 |
 | [第 2 章 GPU 体系结构速通](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part0-intro/chapter2/index.md) | CU/Wavefront/LDS/寄存器/显存层次，RDNA4 视角，不讲 MFMA/CDNA/HBM | 🚧 |
 | [第 3 章 第一个程序 + Roofline 心智模型](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part0-intro/chapter3/index.md) | vector add 跑通、建立性能上限直觉、benchmark 习惯 | 🚧 |
 | **第 1 篇：Profiling 实战** | | |

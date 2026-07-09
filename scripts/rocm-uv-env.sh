@@ -22,10 +22,10 @@
 #
 # 用法：
 #   ./rocm-uv-env.sh
-#   ./rocm-uv-env.sh --arch gfx94X-dcgpu
-#   ./rocm-uv-env.sh --version 7.9.0 --arch gfx94X-dcgpu
-#   ./rocm-uv-env.sh --project-dir ~/rocm-uv-projects/rocm-7.9-gfx94X
-#   ./rocm-uv-env.sh --venv ~/rocm-venvs/rocm-7.9-gfx94X
+#   ./rocm-uv-env.sh --arch gfx120X-all
+#   ./rocm-uv-env.sh --version 7.13.0 --arch gfx120X-all
+#   ./rocm-uv-env.sh --project-dir ~/rocm-uv-projects/rocm-7.13-gfx120X-all
+#   ./rocm-uv-env.sh --venv ~/rocm-venvs/rocm-7.13-gfx120X-all
 #
 
 set -euo pipefail
@@ -210,7 +210,7 @@ Usage:
 
 Options:
   --version VERSION        ROCm package version, e.g. 7.9.0
-  --arch ARCH             GPU arch: gfx94X-dcgpu, gfx950-dcgpu, gfx1151
+  --arch ARCH             GPU arch: gfx120X-all, gfx94X-dcgpu, gfx950-dcgpu, gfx1151
   --gpu-arch ARCH         Same as --arch
   --python PYTHON         Python binary, default: python3.11
 
@@ -229,18 +229,19 @@ Options:
 
 Examples:
   $0
-  $0 --arch gfx94X-dcgpu
-  $0 --version 7.9.0 --arch gfx94X-dcgpu
-  $0 --project-dir ~/rocm-uv-projects/rocm-7.9.0-gfx94X-dcgpu
-  $0 --venv ~/rocm-venvs/rocm-7.9.0-gfx94X-dcgpu
+  $0 --arch gfx120X-all
+  $0 --version 7.13.0 --arch gfx120X-all
+  $0 --project-dir ~/rocm-uv-projects/rocm-7.13.0-gfx120X-all
+  $0 --venv ~/rocm-venvs/rocm-7.13.0-gfx120X-all
   $0 --minimal --arch gfx1151
 
   # Non-interactive 全自动（推荐 CI / 脚本调用）
-  $0 --non-interactive --version 7.12.0 --arch gfx1151 \\
+  $0 --non-interactive --version 7.13.0 --arch gfx120X-all \\
      --region cn --pypi-mirror https://pypi.tuna.tsinghua.edu.cn/simple \\
      --project-dir /path/to/repo
 
 GPU Architecture:
+  gfx120X-all    RX 9070 XT / RX 9070
   gfx94X-dcgpu    MI325X, MI300X, MI300A
   gfx950-dcgpu    MI355X, MI350X
   gfx1151         Ryzen AI APU, Strix, Hawk
@@ -392,6 +393,113 @@ install_basic_tools() {
     esac
 }
 
+install_apt_packages_best_effort() {
+    if [[ "$PKG_MGR" != "apt" ]]; then
+        return 1
+    fi
+
+    if [[ "$EUID" -ne 0 ]] && ! has_cmd sudo; then
+        warn "没有 sudo，无法自动安装系统依赖：$*"
+        return 1
+    fi
+
+    local sudo_cmd=()
+    if [[ "$EUID" -ne 0 ]]; then
+        sudo_cmd=(sudo)
+    fi
+
+    "${sudo_cmd[@]}" apt-get update || true
+    local pkg
+    for pkg in "$@"; do
+        "${sudo_cmd[@]}" apt-get install -y "$pkg" || warn "自动安装 ${pkg} 失败，请手动安装"
+    done
+}
+
+python_dev_header_path() {
+    "$PYTHON_BIN" - <<'PY'
+import sysconfig
+
+include = sysconfig.get_path("include")
+print(f"{include}/Python.h" if include else "")
+PY
+}
+
+python_minor_version() {
+    "$PYTHON_BIN" - <<'PY'
+import sys
+
+print(f"{sys.version_info.major}.{sys.version_info.minor}")
+PY
+}
+
+check_system_build_deps() {
+    echo ""
+    draw_box "Checking system build deps"
+    echo ""
+
+    local missing=()
+
+    if has_cmd g++; then
+        echo -e "  ${GREEN}✓${NC} g++ found: $(command -v g++)"
+    else
+        warn "g++ not found; HIP/Triton native builds need a C++ compiler"
+        missing+=("build-essential")
+    fi
+
+    if compgen -G "/usr/include/c++/*/cstdlib" >/dev/null; then
+        echo -e "  ${GREEN}✓${NC} C++ standard headers found"
+    else
+        warn "C++ standard headers not found under /usr/include/c++"
+        missing+=("build-essential" "libstdc++-14-dev")
+    fi
+
+    local py_header
+    py_header="$(python_dev_header_path || true)"
+    if [[ -n "$py_header" && -f "$py_header" ]]; then
+        echo -e "  ${GREEN}✓${NC} Python.h found: ${py_header}"
+    else
+        local py_minor
+        py_minor="$(python_minor_version || echo "3")"
+        warn "Python.h not found for ${PYTHON_BIN}; Triton JIT will fail without Python dev headers"
+        missing+=("python3-dev" "python${py_minor}-dev")
+    fi
+
+    if [[ ${#missing[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    # Deduplicate while preserving order.
+    local deduped=()
+    local pkg seen
+    for pkg in "${missing[@]}"; do
+        seen=false
+        for existing in "${deduped[@]}"; do
+            [[ "$existing" == "$pkg" ]] && seen=true && break
+        done
+        [[ "$seen" == "false" ]] && deduped+=("$pkg")
+    done
+
+    warn "Missing system build deps: ${deduped[*]}"
+    if [[ "$PKG_MGR" == "apt" ]]; then
+        warn "尝试自动安装；如果 sudo 需要密码，请在实验机手动执行同一条命令"
+        install_apt_packages_best_effort "${deduped[@]}"
+    else
+        warn "未知包管理器，请手动安装等价依赖。Ubuntu 24.04 示例："
+        echo -e "    ${CYAN}sudo apt update && sudo apt install -y build-essential libstdc++-14-dev python3-dev${NC}"
+    fi
+
+    # Re-check Python.h because this is the common Triton JIT blocker.
+    py_header="$(python_dev_header_path || true)"
+    if [[ -z "$py_header" || ! -f "$py_header" ]]; then
+        local py_minor
+        py_minor="$(python_minor_version || echo "3")"
+        warn "Python.h 仍未找到。请在实验机执行："
+        echo -e "    ${CYAN}sudo apt update && sudo apt install -y python3-dev python${py_minor}-dev${NC}"
+    else
+        echo -e "  ${GREEN}✓${NC} Python.h found after install: ${py_header}"
+    fi
+}
+
 detect_gpu() {
     echo ""
     draw_box "Detecting AMD GPU"
@@ -429,6 +537,8 @@ detect_gpu_architecture() {
             detected="gfx950-dcgpu"
         elif echo "$info" | grep -qE 'gfx94[0-9]'; then
             detected="gfx94X-dcgpu"
+        elif echo "$info" | grep -qE 'gfx120[01]|gfx12-generic'; then
+            detected="gfx120X-all"
         elif echo "$info" | grep -qE 'gfx1151'; then
             detected="gfx1151"
         fi
@@ -442,6 +552,8 @@ detect_gpu_architecture() {
             detected="gfx950-dcgpu"
         elif echo "$gpu_info" | grep -qiE 'MI325|MI300|gfx94|Aldebaran|CDNA3'; then
             detected="gfx94X-dcgpu"
+        elif echo "$gpu_info" | grep -qiE '9070|gfx120|Navi 48|RDNA4'; then
+            detected="gfx120X-all"
         elif echo "$gpu_info" | grep -qiE 'gfx1151|Strix|Hawk|Ryzen AI'; then
             detected="gfx1151"
         fi
@@ -454,7 +566,7 @@ validate_gpu_arch() {
     local arch="$1"
 
     case "$arch" in
-        gfx94X-dcgpu|gfx950-dcgpu|gfx1151)
+        gfx120X-all|gfx94X-dcgpu|gfx950-dcgpu|gfx1151)
             return 0
             ;;
         *)
@@ -544,6 +656,11 @@ ensure_fzf() {
 arch_index_url() {
     local arch="$1"
     echo "${ROCM_WHL_BASE}/${arch}/"
+}
+
+rocm_package_arch() {
+    local arch="$1"
+    printf '%s' "$arch" | tr '[:upper:]' '[:lower:]'
 }
 
 check_arch_index() {
@@ -650,7 +767,7 @@ select_gpu_arch() {
             return 0
         fi
 
-        error "Non-interactive mode requires --arch. Example: --arch gfx94X-dcgpu"
+        error "Non-interactive mode requires --arch. Example: --arch gfx120X-all"
     fi
 
     echo ""
@@ -661,6 +778,10 @@ select_gpu_arch() {
 
     if [[ -n "$detected_arch" ]]; then
         options+=("${detected_arch}    Auto-detected")
+    fi
+
+    if [[ "$detected_arch" != "gfx120X-all" ]]; then
+        options+=("gfx120X-all    RX 9070 XT / RX 9070")
     fi
 
     if [[ "$detected_arch" != "gfx94X-dcgpu" ]]; then
@@ -1308,7 +1429,9 @@ configure_pyproject_indexes() {
 
     local pyproject="${PROJECT_DIR}/pyproject.toml"
     local whl_url
+    local libraries_pkg
     whl_url="$(arch_index_url "$GPU_ARCH")"
+    libraries_pkg="rocm-sdk-libraries-$(rocm_package_arch "$GPU_ARCH")"
 
     if [[ ! -f "$pyproject" ]]; then
         error "pyproject.toml not found at ${pyproject}"
@@ -1319,14 +1442,14 @@ configure_pyproject_indexes() {
         error "Venv Python not found: ${venv_python}"
     fi
 
-    "$venv_python" - "$pyproject" "$whl_url" "${PYPI_MIRROR:-}" "$GPU_ARCH" <<'PY'
+    "$venv_python" - "$pyproject" "$whl_url" "${PYPI_MIRROR:-}" "$libraries_pkg" <<'PY'
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
 rocm_url = sys.argv[2]
 pypi_mirror = sys.argv[3] or ""
-gpu_arch = sys.argv[4]
+libraries_pkg = sys.argv[4]
 
 text = path.read_text()
 original = text
@@ -1369,7 +1492,7 @@ ROCM_PKGS = [
     "rocm-sdk-core",
     "rocm-sdk-devel",
     "rocm-sdk-libraries",
-    f"rocm-sdk-libraries-{gpu_arch}",
+    libraries_pkg,
     "rocm-core",
     "rocm-smi-lib",
 ]
@@ -1444,13 +1567,16 @@ add_rocm_packages() {
             uv add rocm-core rocm-smi-lib
         fi
     else
-        log "uv add rocm + rocm-sdk-{core,devel,libraries-${GPU_ARCH}} (==${ROCM_VERSION})"
+        local libraries_pkg
+        libraries_pkg="rocm-sdk-libraries-$(rocm_package_arch "$GPU_ARCH")"
+
+        log "uv add rocm + rocm-sdk-{core,devel,${libraries_pkg}} (==${ROCM_VERSION})"
 
         if ! uv add \
             "rocm==${ROCM_VERSION}" \
             "rocm-sdk-core==${ROCM_VERSION}" \
             "rocm-sdk-devel==${ROCM_VERSION}" \
-            "rocm-sdk-libraries-${GPU_ARCH}==${ROCM_VERSION}"
+            "${libraries_pkg}==${ROCM_VERSION}"
         then
             warn "full 安装失败，回退到 minimal（rocm-core + rocm-smi-lib）"
             uv add rocm-core rocm-smi-lib
@@ -1642,6 +1768,7 @@ main() {
     ensure_uv
     ensure_fzf
     ensure_python
+    check_system_build_deps
 
     select_gpu_arch
 

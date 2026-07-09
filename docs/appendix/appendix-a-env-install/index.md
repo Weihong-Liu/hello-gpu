@@ -19,7 +19,7 @@ description: "Hello GPU 附录 · 本篇环境文件是怎么来的、为什么 
 bash scripts/bootstrap-rocm-env.sh --part part0-intro
 ```
 
-> 🚧 注意：`bootstrap-rocm-env.sh` / `rocm-uv-env.sh` 的默认 `--arch`、`--version`、wheel 源 URL 需要从 gfx1151/7.12.0 更新为 gfx12/6.4.x。这是机器就绪后的第一件事。详见 `.docs-rules/03-environment.md` §5。
+> 当前脚本默认基线是 `gfx120X-all` / ROCm 7.13.0 / `https://repo.amd.com/rocm/whl/gfx120X-all/`。如果你换卡，只改 wheel 源 URL 和 libraries 包名，详见附录 B。
 
 这个脚本会在 `code/part0-intro/` 下准备好三类文件：
 
@@ -40,7 +40,7 @@ code/part0-intro/
 
 ## A.2 为什么 AMD wheel 源要 explicit
 
-9070XT（RDNA4 消费卡）走的是 AMD **`radeon-ryzen`** 项目 wheel（面向 RDNA3/4 消费卡），和数据中心卡的 wheel 源不同。
+9070XT（RDNA4 消费卡）走的是 AMD `gfx120X-all` wheel 源（gfx1200/1201 通用合并包），和数据中心卡、gfx1151 等源不同。
 
 `explicit = true` 的意思是：**只有在 `[tool.uv.sources]` 里被明确点名映射到 `rocm-amd` 的包，才会去这个源查询**，其他包一律不打扰它。
 
@@ -79,10 +79,35 @@ source ./activate-rocm.sh
 
 正确状态应该是看到 `ROCM_PATH=.../_rocm_sdk_devel` 而不是 `_rocm_sdk_core`。
 
+## A.4 系统开发头文件：Triton JIT 需要 `Python.h`
+
+`uv sync` 只能安装 Python wheel 依赖，不能替系统安装 C/C++ 编译器和 Python 开发头文件。Triton 第一次启动 kernel 时会 JIT 编译一小段 native helper，如果实验机缺 `Python.h`，会报类似错误：
+
+```text
+fatal error: Python.h: No such file or directory
+```
+
+这不是 Triton kernel 写错了，而是原生 Ubuntu 最小安装缺系统开发包。实验机初始化时请先装齐：
+
+```bash
+sudo apt update
+sudo apt install -y build-essential libstdc++-14-dev python3-dev
+```
+
+验证：
+
+```bash
+which g++
+ls /usr/include/c++/14/cstdlib
+ls /usr/include/python3.12/Python.h
+```
+
+如果你给 uv 指定了非系统默认 Python 小版本，再额外安装对应的开发包，例如 `python3.12-dev`。本仓库的 `scripts/bootstrap-rocm-env.sh` 会在 bootstrap 时检查这些依赖；章节脚本（例如第 4 章 `bench_ch4.py`）也会在进入 Triton JIT 前给出同样的修复提示。
+
 ## 延伸阅读
 
 - [uv Documentation](https://docs.astral.sh/uv/)
 - [AMD ROCm Documentation](https://rocm.docs.amd.com/)
-- [Use ROCm on Radeon GPUs（radeon-ryzen 项目）](https://rocm.docs.amd.com/projects/radeon-ryzen/en/docs-6.4.2/)
+- [AMD ROCm wheel 源（gfx120X-all）](https://repo.amd.com/rocm/whl/gfx120X-all/)
 - 本教程 [第 1 章 环境准备](../../part0-intro/chapter1/index.md)
 - [附录 B · 换一张卡：从 gfx120X-all 迁移到 gfx1151](../appendix-b-switch-gpu/index.md)

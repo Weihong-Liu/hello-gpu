@@ -40,7 +40,7 @@ description: "Hello GPU 第17章 · Qwen 0.5B/1.8B 量化、decode 算子视角�
 ## 本章小结
 
 - 本章目前是 Alpha 阶段的大纲骨架，正式正文会在对应实验跑通后补齐。
-- 涉及命令、输出或性能数字的内容，后续必须在 Radeon RX 9070 XT + ROCm 6.4.x（Linux）上实测。
+- 涉及命令、输出或性能数字的内容，后续必须在 Radeon RX 9070 XT + ROCm 7.13 / 原生 Ubuntu 24.04 上实测。
 - 与本章相关的代码、日志和实验底稿会放在 `code/part4-models-agent/chapter17/`。
 
 ## 延伸阅读

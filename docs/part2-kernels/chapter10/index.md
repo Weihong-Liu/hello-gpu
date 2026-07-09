@@ -90,7 +90,7 @@ flowchart TD
 
 这个差距在 S=4096 时已经达到 16 倍，而 S 越长差距越大（**二次方 vs 线性**）。这就是 FlashAttention 思路要解决的核心问题。
 
-> 🚧 待 job 填充（9070XT）：在 9070XT + ROCm 6.4.x 上，用一个物化 S=QK^T 的 PyTorch 参考实现，跑 S ∈ {512, 1024, 2048, 4096}，记录 `torch.cuda.max_memory_allocated()` 的峰值，验证上面这条「二次方 vs 线性」的曲线。原始数据放进 `code/part2-kernels/chapter10/logs/`。
+> 🚧 待 job 填充（9070XT）：在 9070XT + ROCm 7.13 / 原生 Ubuntu 24.04 上，用一个物化 S=QK^T 的 PyTorch 参考实现，跑 S ∈ {512, 1024, 2048, 4096}，记录 `torch.cuda.max_memory_allocated()` 的峰值，验证上面这条「二次方 vs 线性」的曲线。原始数据放进 `code/part2-kernels/chapter10/logs/`。
 
 ## 10.3 分块计算（Tiling）
 

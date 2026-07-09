@@ -3,7 +3,7 @@ layout: home
 hero:
   name: "Hello GPU"
   text: "GPU 算子优化入门 + Agent 自动化"
-  tagline: 拿到一张 AMD 显卡，学会几个经典算子从慢到快的优化思路，最后亲手搭一个能自动做这件事的 Agent。基于 AMD Radeon RX 9070 XT + ROCm 6.4.x（Linux）实测。
+  tagline: 拿到一张 AMD 显卡，学会几个经典算子从慢到快的优化思路，最后亲手搭一个能自动做这件事的 Agent。基于 AMD Radeon RX 9070 XT + ROCm 7.13（原生 Ubuntu 24.04）实测。
   actions:
     - theme: brand
       text: 开始学习
@@ -19,7 +19,7 @@ features:
   - title: 🤖 Agent-Driven
     details: 把「人做的优化流程」封装给 Agent 自动做：从单 kernel 到真实模型（YOLO/LLM）
   - title: 🧪 实测基线
-    details: 所有实验默认在 Radeon RX 9070 XT + ROCm 6.4.x（Linux）上验证，其他设备先参考方法论
+    details: 所有实验默认在 Radeon RX 9070 XT + ROCm 7.13（原生 Ubuntu 24.04）上验证，其他设备先参考方法论
   - title: 📖 入门 + 4 篇正文，共 18 章
     details: 入门与硬件速通 → Profiling 实战 → 算子优化 + 刷题 → Agent（算子层）→ 真实模型 + Agent
 ---

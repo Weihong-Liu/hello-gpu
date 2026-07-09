@@ -6,7 +6,7 @@
 
 用法：
     python micro_bench.py
-硬件上下文：Radeon RX 9070 XT（gfx1201）+ ROCm 7.13（WSL2）
+硬件上下文：Radeon RX 9070 XT（gfx1201）+ ROCm 7.13（原生 Ubuntu 24.04）
 """
 import argparse
 

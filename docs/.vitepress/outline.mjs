@@ -24,14 +24,14 @@ export const parts = [
       },
       {
         title: '环境准备',
-        summary: '9070XT + Linux + ROCm 6.4 验证、Windows 劝退、uv 环境、最小 smoke test',
+        summary: '9070XT + 原生 Ubuntu + ROCm 7.13 验证、Windows/WSL2 边界、uv 环境、最小 smoke test',
         status: '🚧',
         lead: '本章不深入讲 ROCm 软件栈原理，只用最短路径帮你确认实验环境能不能继续往后跑。读完后，你应该能通过 uv sync 复现本篇环境，确认 ROCm 能看到 GPU，并跑通最小 HIP 程序。',
         sections: [
-          ['本教程的实验基线', '明确所有实验默认在 Radeon RX 9070 XT + ROCm 6.4.x（Linux）上验证，其他设备只参考方法。'],
-          ['为什么不用 Windows', '说明 9070XT 无官方 Windows ROCm 支持，劝退 Windows 路线，建议用 Linux 主机或 WSL2（但优先原生 Linux）。'],
+          ['本教程的实验基线', '明确所有实验默认在 Radeon RX 9070 XT + ROCm 7.13 + 原生 Ubuntu 24.04 上验证，其他设备只参考方法。'],
+          ['原生 Linux 优先，WSL2 可用但受限', '说明 9070XT 主线实验优先使用原生 Linux；WSL2 可用于学习计算路径，但 rocm-smi 和硬件性能计数器能力受限。'],
           ['同步本篇 uv 环境', '进入 code/part0-intro 后运行 uv sync，并用 activate-rocm.sh 激活 ROCm wheel 环境。'],
-          ['验证 GPU 可见性', '用 rocminfo 和 rocm-smi 检查 GPU、驱动、显存和运行状态。'],
+          ['验证 GPU 可见性', '用 rocminfo 检查 GPU、驱动和 ROCm 运行时；rocm-smi 作为原生 Linux 的可选状态监控工具。'],
           ['验证 PyTorch ROCm', '运行最小 PyTorch ROCm smoke test，确认框架能看到 GPU。'],
           ['验证最小 HIP 程序', '直接用 hipcc 编译并运行最小 vector add 程序。'],
           ['环境不通时先收集什么', '列出报错、版本、命令输出、硬件信息和日志，避免盲目排错。']

@@ -246,18 +246,18 @@ device_name: AMD Radeon RX 9070 XT
 vector_size: 16777216
 warmup: 5
 repeat: 30
-cpu_mean_ms: 9.570484
-cpu_median_ms: 9.507611
-cpu_min_ms: 7.828030
-cpu_bandwidth_gb_s_by_min: 25.718679
-gpu_mean_ms: 0.345777
-gpu_median_ms: 0.339655
-gpu_min_ms: 0.334954
-gpu_bandwidth_gb_s_by_min: 601.057446
+cpu_mean_ms: 8.681129
+cpu_median_ms: 8.536416
+cpu_min_ms: 7.356311
+cpu_bandwidth_gb_s_by_min: 27.367874
+gpu_mean_ms: 0.353474
+gpu_median_ms: 0.346692
+gpu_min_ms: 0.345132
+gpu_bandwidth_gb_s_by_min: 583.332163
 status: PASS
 ```
 
-GPU min 延迟 0.335 ms，估算有效带宽约 601 GB/s——比 CPU（25.7 GB/s）快约 23 倍。
+GPU min 延迟 0.345 ms，估算有效带宽约 583 GB/s——比 CPU（27.4 GB/s）快约 21 倍。
 
 </details>
 
@@ -267,7 +267,7 @@ GPU min 延迟 0.335 ms，估算有效带宽约 601 GB/s——比 CPU（25.7 GB/
 bytes_moved = vector_size × 3 × 4
 ```
 
-实测 GPU 估算有效带宽约 601 GB/s——下一节就拿它和 Roofline 上限对比。
+实测 GPU 估算有效带宽约 583 GB/s——下一节就拿它和 Roofline 上限对比。
 
 ## 3.4 Roofline 心智模型
 
@@ -294,26 +294,28 @@ bytes_moved = vector_size × 3 × 4
 | 项目 | 数值 |
 | ---- | ---- |
 | vector add 算术强度 | ~0.083 FLOP/Byte（memory-bound）|
-| 实测有效带宽（vector add, 16M 元素 ≈ 64 MiB）| **~601 GB/s** |
-| GDDR6 实测带宽上限（copy, ≥1 GiB 平台，见 [第 2 章 §2.11](../chapter2/index.md)）| ~500 GB/s |
+| 实测有效带宽（PyTorch `benchmark_vector_add.py`, 16M 元素 ≈ 64 MiB）| **~583 GB/s** |
+| 实测有效带宽（手写 HIP coalesced, 第 5 章同规模 benchmark）| **~603 GB/s** |
+| GDDR6 实测带宽上限（copy, ≥1 GiB 平台，见 [第 2 章 §2.11](../chapter2/index.md)）| ~510 GB/s |
 | 标称带宽（理论峰值）| ~760 GB/s |
-| 带宽利用率（实测 / GDDR6 上限）| ~120%（高于 100%，见下文解释）|
+| 带宽利用率（PyTorch / GDDR6 上限）| ~114%（高于 100%，见下文解释）|
+| 带宽利用率（手写 HIP / GDDR6 上限）| ~118%（同样属于有效带宽口径）|
 
-> vector add 实测有效带宽（601 GB/s）高于 GDDR6 实测上限（500 GB/s），看起来"超标"——原因不是测量错了，而是 16M 元素 ≈ 64 MiB 的工作集**部分落在 L2 命中区**，缓存复用拉高了有效带宽。[第 2 章 §2.11](../chapter2/index.md) 的带宽扫描里也能看到：64 MiB footprint 时 copy 带宽 561 GB/s，明显高于 1 GiB 时的 500 GB/s。这说明 vector add 在这个规模下没有真正卡在 GDDR6 上——这正是它的访存模式非常友好（完全合并、线性流式）的结果。要让带宽利用率回到 100% 以内，把输入规模推到 ≥1 GiB（远超 L2）再测即可。
+> 两个 vector add 点的有效带宽（583 / 603 GB/s）都高于 GDDR6 copy 稳态上限（510 GB/s），看起来"超标"——原因不是测量错了，而是这里的 GB/s 是按 `3 × n × sizeof(float)` 反推的**有效带宽**，不是硬件计数器直接数出来的 DRAM 字节数。16M 元素约 64 MiB，工作集仍可能吃到 L2 / 写路径优化；[第 2 章 §2.11](../chapter2/index.md) 的 copy 扫描也能看到 64 MiB footprint 高于 1 GiB plateau。这说明 vector add 在这个规模下没有完全卡在纯 GDDR6 上——这正是它的访存模式非常友好（完全合并、线性流式）的结果。要让带宽利用率回到 100% 以内，把输入规模推到 ≥1 GiB（远超 L2）再测即可。
 
-现在把这个实测点画到 Roofline 曲线上。横轴是算术强度（FLOP/Byte，对数轴），纵轴是实际性能（TFLOPS，对数轴）；两条硬件线来自 [第 2 章 §2.11](../chapter2/index.md) 的实测值（带宽 ~601 GB/s、fp32 算力 ~14.6 TFLOPS、fp16 算力 ~124 TFLOPS），vector add 点来自本节实测：
+现在把这两个实测点画到 Roofline 曲线上。横轴是算术强度（FLOP/Byte，对数轴），纵轴是实际性能（TFLOPS，对数轴）；硬件线来自 [第 2 章 §2.11](../chapter2/index.md) 的实测值（GDDR6 copy plateau ~510 GB/s、fp32 算力 ~10.6 TFLOPS、fp16 算力 ~79.9 TFLOPS）。橙色点来自本节 `benchmark_vector_add.py` 的 PyTorch ROCm baseline 输出；紫色点来自[第 5 章](../../part1-profiling/chapter5/index.md)同规模手写 HIP coalesced benchmark（`vector_add_bench --kernel coalesced`）。注意，§3.2 的 `vector_add.hip` 只用于验证手写 HIP kernel 能编译运行并通过正确性检查，不提供这张图里的计时和带宽数据。
 
 ::: figure fig-roofline-vadd
 ![Roofline 曲线：vector add 实测点](./images/roofline-vector-add.png)
 
-vector add 的实测点（★）落在 Roofline 斜线最左下端——典型的 memory-bound。两条斜线分别是 vector add 实测带宽（601 GB/s）和 GDDR6 平台带宽（500 GB/s）；两条水平线是 fp32（14.6 TFLOPS，SIMD FMA）和 fp16（124 TFLOPS，WMMA）算力上限。图由 `code/part0-intro/chapter3/plot_roofline.py` 生成。
+PyTorch baseline 和手写 HIP coalesced 两个 vector add 实测点都落在 Roofline 斜线最左下端——典型的 memory-bound。斜线分别标出 PyTorch 有效带宽（583 GB/s）、手写 HIP 有效带宽（603 GB/s）和 GDDR6 平台 copy plateau（510 GB/s）；两条水平线是 fp32（10.6 TFLOPS，SIMD FMA）和 fp16（79.9 TFLOPS，WMMA）算力上限。图由 `code/part0-intro/chapter3/plot_roofline.py` 生成。
 :::
 
 读这张图能直接得到三个直觉：
 
-- **vector add 贴着斜线，远离两条水平线**——它是 memory-bound，算力（VALU/WMMA）完全没吃满，瓶颈在带宽。就算把 fp32 换成 fp16，算力线再高它也快不了多少，因为它压根没走到算力那一侧。
-- **它已经接近斜线本身**——说明 vector add 的访存效率很高（完全合并），优化空间已经不大；想再快只能提高算术强度（融合多个 elementwise 算子，让搬一次数据做更多 FLOP），把工作点**沿斜线往右上方推**，推过拐点后才会进入 compute-bound 区。
-- **两条水平线差距巨大（fp16 是 fp32 的 ~8.5 倍）**——但这个差距对 vector add 毫无意义，因为它在斜线那一侧。只有 GEMM / Attention 这种高算术强度算子（点落在水平线附近）才能吃到 WMMA 的红利——这是后面 [第 9 章 GEMM](../../part2-kernels/chapter9/index.md)、[第 10 章 Flash Attention](../../part2-kernels/chapter10/index.md) 反复要用的判断。
+- **两个 vector add 点都贴着斜线，远离两条水平线**——它们都是 memory-bound，算力（VALU/WMMA）完全没吃满，瓶颈在带宽。PyTorch baseline 和手写 HIP coalesced 的有效带宽接近（583 vs 603 GB/s），说明这个简单算子的主要限制不是框架开销，而是线性流式访存本身。就算把 fp32 换成 fp16，算力线再高它也快不了多少，因为它压根没走到算力那一侧。
+- **它们已经接近斜线本身**——说明 vector add 的访存效率很高（完全合并），优化空间已经不大；想再快只能提高算术强度（融合多个 elementwise 算子，让搬一次数据做更多 FLOP），把工作点**沿斜线往右上方推**，推过拐点后才会进入 compute-bound 区。
+- **两条水平线差距巨大（fp16 是 fp32 的 ~7.5 倍）**——但这个差距对 vector add 毫无意义，因为它在斜线那一侧。只有 GEMM / Attention 这种高算术强度算子（点落在水平线附近）才能吃到 WMMA 的红利——这是后面 [第 9 章 GEMM](../../part2-kernels/chapter9/index.md)、[第 10 章 Flash Attention](../../part2-kernels/chapter10/index.md) 反复要用的判断。
 
 这个对比建立了一个贯穿全书的核心直觉：**判断一个算子优化得好不好，不是看绝对延迟，而是看它离 Roofline 上限有多远、落在斜线还是水平线那一侧**。上面这张图就是这个直觉的可视化——你现在已经会画了。后续 Part 1 的 [第 5 章](../../part1-profiling/chapter5/index.md)、[第 6 章](../../part1-profiling/chapter6/index.md) 会用 profiling 工具解释"为什么这个点没贴满斜线"，Part 2 的每个算子都会在它自己的 Roofline 上画点。
 
@@ -350,10 +352,10 @@ python benchmark_vector_add.py
 
 | 项目 | 数值 |
 | ---- | ---- |
-| 硬件 | AMD Radeon RX 9070 XT（gfx1201）+ ROCm 7.13（WSL2）|
+| 硬件 | AMD Radeon RX 9070 XT（gfx1201）+ ROCm 7.13（原生 Ubuntu 24.04）|
 | 输入规模 | 16,777,216 个 float32（≈ 64 MiB/数组）|
-| GPU min 延迟 | 0.335 ms |
-| GPU 估算带宽 | ~601 GB/s |
+| GPU min 延迟 | 0.345 ms |
+| GPU 估算带宽 | ~583 GB/s |
 | status | PASS |
 ````
 
