@@ -1,19 +1,18 @@
 """Ch6 Roofline：把 Ch5 的 coalesced / linecross 两个实测点画到 9070XT Roofline 上。
 
 对比 Ch3 的版本，本章多画一个 linecross（跨 cache line）点，直观展示
-"访存合并被破坏后，工作点从带宽斜线跌下来多远"——这是 Part 1 profiling
+"地址分散后，工作点离带宽斜线有多远"——这是 Part 1 profiling
 闭环的最终交付图。
 
 实测数据来源（均在 9070XT + ROCm 7.13 + 原生 Ubuntu 24.04 测得）：
-  - 标称峰值带宽：~760 GB/s
-  - coalesced vector add 有效带宽：603 GB/s（Ch5 §5.2，192MiB footprint 部分 L2 命中）
-  - linecross stride=32 有效带宽：90 GB/s（Ch5 §5.2，跨 cache line 合并破坏）
-  - fp32 算力：~14.6 TFLOPS（Ch2 实测 torch.matmul）
-  - fp16 算力：~124 TFLOPS（Ch2 实测 torch.matmul, WMMA）
+  - 大数组 copy 的 GDDR6 稳态带宽：~510 GB/s
+  - coalesced vector add 有效带宽：603 GB/s（Ch5 §5.2）
+  - linecross stride=32 有效带宽：89.7 GB/s（Ch5 §5.2）
+  - fp32 算力：~10.6 TFLOPS（Ch2 实测 torch.matmul）
 
-两个工作点算术强度相同（都处理 n 个元素、做 1 次加法、搬 3n×4 字节，AI=1/12≈0.083），
-唯一差别是 linecross 的有效带宽因合并破坏跌到 90 GB/s，所以它的实测性能点
-(P = AI × B_ach) 比 coalesced 低 6.7×。
+两个工作点按算法口径计算出的算术强度相同（都处理 n 个元素、做 1 次加法、
+搬 3n×4 字节，AI=1/12≈0.083）。linecross 同时改变地址排布和工作划分，
+它的实测性能点（P = AI × B_ach）比 coalesced 低 6.7×；图只描述结果，不归因。
 
 标签全用英文，避免中文字体缺失乱码；中文解读放正文图注。
 
@@ -28,20 +27,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # ---- 实测硬件参数 ----
-BW_NOMINAL = 760          # GB/s, 标称峰值
-P_FP32 = 14.6             # TFLOPS, torch.matmul fp32
-P_FP16 = 124.0            # TFLOPS, torch.matmul fp16 (WMMA)
+BW_GDDR6 = 510            # GB/s, ≥1 GiB copy 实测稳态带宽
+P_FP32 = 10.6             # TFLOPS, torch.matmul fp32 实测
 
 # ---- 两个工作点实测（Ch5 §5.2）----
 AI_VADD = 1.0 / 12        # ≈ 0.083 FLOP/Byte，两版相同
 BW_COALESCED = 603        # GB/s, coalesced 有效带宽
-BW_LINECROSS = 90         # GB/s, linecross stride=32 有效带宽
+BW_LINECROSS = 89.7       # GB/s, linecross stride=32 有效带宽
 P_COALESCED = AI_VADD * BW_COALESCED / 1e3   # TFLOPS ≈ 0.050
 P_LINECROSS = AI_VADD * BW_LINECROSS / 1e3   # TFLOPS ≈ 0.0075
-
-# 拐点
-KNEE_FP32 = P_FP32 / (BW_COALESCED / 1e3)
-KNEE_FP16 = P_FP16 / (BW_COALESCED / 1e3)
 
 
 def plot(save_path=None):
@@ -49,19 +43,15 @@ def plot(save_path=None):
 
     ai = np.logspace(-2, 3.2, 500)
 
-    # 带宽斜线（标称 / coalesced 实测）。大 footprint copy 线待 Ch4 原生复跑后再加回。
-    ax.plot(ai, (BW_NOMINAL / 1e3) * ai, ":", color="#2563eb", lw=1.2, alpha=0.6,
-            label=f"Slope: BW = {BW_NOMINAL} GB/s (nominal)")
-    ax.plot(ai, (BW_COALESCED / 1e3) * ai, "-", color="#2563eb", lw=1.8,
-            label=f"Slope: BW = {BW_COALESCED} GB/s (coalesced measured)")
+    # Roofline 使用独立于工作点的大数组 copy 稳态带宽。
+    ax.plot(ai, (BW_GDDR6 / 1e3) * ai, "-", color="#2563eb", lw=1.8,
+            label=f"GDDR6 reference = {BW_GDDR6} GB/s (measured)")
 
     # 算力水平线
     ax.axhline(P_FP32, color="#dc2626", lw=1.8, ls="--",
-               label=f"fp32 ceiling = {P_FP32} TFLOPS")
-    ax.axhline(P_FP16, color="#059669", lw=1.8, ls="--",
-               label=f"fp16 ceiling = {P_FP16} TFLOPS (WMMA)")
+               label=f"FP32 compute reference = {P_FP32} TFLOPS (measured)")
 
-    # coalesced 实测点（贴着带宽斜线）
+    # coalesced 实测点（算法有效带宽可能高于独立 copy 参考线）
     ax.scatter([AI_VADD], [P_COALESCED], color="#ea580c", zorder=6, s=95,
                marker="*", edgecolors="black", linewidths=0.6)
     ax.annotate("coalesced (measured)\n"
@@ -86,11 +76,11 @@ def plot(save_path=None):
                 arrowprops=dict(arrowstyle="->", color="#94a3b8", lw=1.5,
                                 connectionstyle="arc3,rad=0.3"))
     ax.text(AI_VADD * 1.15, (P_COALESCED + P_LINECROSS) / 2,
-            "coalesced -> linecross\n(bandwidth collapse)", fontsize=8,
+            "coalesced -> linecross\n(configuration change)", fontsize=8,
             color="#64748b", va="center")
 
     # 区域标注
-    ax.text(0.02, 0.5, "memory-bound\n(slope side)", transform=ax.transAxes,
+    ax.text(0.03, 0.66, "memory-bound\n(slope side)", transform=ax.transAxes,
             fontsize=10, color="#2563eb", alpha=0.55, va="center")
     ax.text(0.80, 0.5, "compute-bound\n(ceiling side)", transform=ax.transAxes,
             fontsize=10, color="#dc2626", alpha=0.55, va="center")
@@ -99,12 +89,12 @@ def plot(save_path=None):
     ax.set_yscale("log")
     ax.set_xlabel("Arithmetic Intensity (FLOP / Byte)", fontsize=11)
     ax.set_ylabel("Performance (TFLOPS)", fontsize=11)
-    ax.set_title("Roofline: 9070XT — coalesced vs linecross (Ch5/Ch6)",
+    ax.set_title("Roofline: Radeon RX 9070 XT vector add",
                  fontsize=12)
     ax.grid(True, which="both", ls=":", alpha=0.35)
-    ax.legend(loc="center left", fontsize=8, framealpha=0.92)
+    ax.legend(loc="upper left", fontsize=8, framealpha=0.92)
     ax.set_xlim(1e-2, 1e3)
-    ax.set_ylim(1e-3, 400)
+    ax.set_ylim(1e-3, 40)
 
     fig.tight_layout()
     if save_path:

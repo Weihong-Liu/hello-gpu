@@ -88,30 +88,30 @@ export const parts = [
         ]
       },
       {
-        title: 'rocprof + Omniperf 定位瓶颈',
-        summary: 'kernel 耗时、访存/占用率计数器、strided 非合并访存反例',
+        title: '用 rocprof 找到慢在哪里',
+        summary: '对照两个 vector add，只看 kernel 时间、工作划分和 stride 趋势',
         status: '🚧',
-        lead: '本章用一个固定案例（vector add 的合并版 vs strided 非合并版）做主线，让每个 profiling 工具服务同一个问题：它到底慢在哪里。读完后，你应该能完成一次从 benchmark 到优化假设的最小闭环。',
+        lead: '本章先用 benchmark 比较两个 vector add 配置，再用 rocprof 查看每次 kernel dispatch。随后我们会检查 stride 实际同时改变了哪些底层变量，避免把一个有混杂的对照实验写成过早的性能结论。',
         sections: [
-          ['两个版本的 vector add', '准备合并访存版和 strided 非合并版，作为对照案例。'],
-          ['运行 baseline benchmark', '用统一脚本记录两个版本的延迟、吞吐和硬件上下文。'],
-          ['用 rocprof 看 kernel 时间', '采集 kernel 级耗时，找出主要开销来自哪里。'],
-          ['用 Omniperf 看硬件计数器', '观察带宽利用率、访存合并、L2 命中率等底层信号。'],
-          ['Occupancy 与 Wavefront 行为', '理解占用率、寄存器压力对性能的影响。'],
-          ['从 profiling 结果反推优化方向', '把观测结果转成下一步实验假设，而不是直接拍脑袋改代码。']
+          ['先看懂两个实现', '看地址排布、每线程循环次数和 Grid Size 分别怎样变化。'],
+          ['先跑一遍，确认谁更慢', '固定输入和计时方法，只比较两个 kernel 的延迟与有效带宽。'],
+          ['用 rocprof 看每次 kernel dispatch', '第一次只看 kernel 名、起止时间、Grid Size 和寄存器用量。'],
+          ['先列出一起变化的东西', '区分地址排布、每线程工作量和并行规模。'],
+          ['看看静态资源有没有变', '比较同一个 kernel 在不同 stride 下的 VGPR、SGPR 和 LDS。'],
+          ['用 stride 扫描观察趋势', '观察组合效果，并说明下一组公平对照应固定什么。']
         ]
       },
       {
-        title: 'Roofline 曲线详解 + 性能报告',
-        summary: '把算子点画到 Roofline、解释差距、报告模板',
+        title: '读懂 Roofline 图',
+        summary: '看懂参考线、生成工作点并选择排查方向',
         status: '🚧',
-        lead: '本章把前两章的 profiling 过程整理成一份可复查的报告，并用 Roofline 曲线把算子性能可视化。读完后，你应该能把命令、日志、关键数字、瓶颈判断和下一步计划写成别人能复现的 Markdown。',
+        lead: '本章把前两章得到的时间和带宽放到 Roofline 图上，并说明绘图脚本使用了哪些实测数据。重点不是推公式，而是学会看工作点靠近哪条线、下一步该查访存还是计算。',
         sections: [
-          ['Roofline 曲线怎么读', '复习 Ch3 的心智模型，这次用真实 profiling 数据画点。'],
-          ['把 vector add 画到 Roofline 上', '用实测带宽和算力定位算子在曲线上的位置，解释它离极限有多远。'],
-          ['解释差距来自哪里', '结合 Omniperf 计数器，说明为什么没达到理论上限。'],
-          ['性能报告模板', '形成一份包含硬件上下文、命令、结果、瓶颈判断和风险说明的报告。'],
-          ['本章小结：profiling 闭环', '回顾 Part 1 建立的「测量 → 定位 → 假设」闭环，预告 Part 2 算子篇会反复用到。']
+          ['Roofline 只看三件事', '看横轴、纵轴和工作点离哪条上限更近。'],
+          ['把 vector add 放到图上', '说明数据来源和绘图命令，再用算术强度、实测时间和有效带宽画出工作点。'],
+          ['工作点离线很远怎么办', '从访存、计算和启动开销三个方向依次排查。'],
+          ['写一页性能记录', '只记录环境、命令、结果、判断和下一步。'],
+          ['Part 1 的四步闭环', '回顾「量准 → 找到慢点 → 解释 → 验证」并衔接 Part 2。']
         ]
       }
     ]
@@ -221,11 +221,11 @@ export const parts = [
         title: '工具封装',
         summary: 'benchmark/profiling/编译包成 Agent 可调用工具',
         status: '🚧',
-        lead: '本章把 Part 1 学过的 benchmark、rocprof、Omniperf 以及编译流程，封装成 Agent 能调用的标准化工具。这是让 Agent「能动手」的前提——没有工具的 Agent 只会空谈。',
+        lead: '本章把 Part 1 学过的 benchmark、rocprof 以及编译流程，封装成 Agent 能调用的标准化工具。这是让 Agent「能动手」的前提——没有工具的 Agent 只会空谈。',
         sections: [
           ['为什么要封装工具', '说明 Agent 不能直接操作 shell，需要结构化、可解析的工具接口。'],
           ['封装 benchmark 工具', '把 Part 1 的计时脚本包成输入 kernel → 输出延迟/带宽的标准化工具。'],
-          ['封装 profiling 工具', '把 rocprof/Omniperf 包成输入 kernel → 输出瓶颈信号的标准化工具。'],
+          ['封装 profiling 工具', '把 rocprof 包成输入 kernel → 输出瓶颈信号的标准化工具。'],
           ['封装编译工具', '把 hipcc/triton 编译流程包成输入代码 → 输出编译成功/失败的标准化工具。'],
           ['工具的输入输出 schema', '用 JSON schema 定义每个工具的接口，让 Agent 能正确调用。'],
           ['错误处理与重试', '说明工具失败时如何把错误信息回传给 Agent 触发反思。']

@@ -7,7 +7,7 @@ description: "Hello GPU 第13章 · benchmark/profiling/编译包成 Agent 可�
 
 ## 本章导读
 
-> 本章把 Part 1 学过的 benchmark、rocprof、Omniperf 以及编译流程，封装成 Agent 能调用的标准化工具。这是让 Agent「能动手」的前提——没有工具的 Agent 只会空谈。
+> 本章把 Part 1 学过的 benchmark、rocprof 以及编译流程，封装成 Agent 能调用的标准化工具。这是让 Agent「能动手」的前提——没有工具的 Agent 只会空谈。
 
 ## 13.1 为什么要封装工具
 
@@ -19,7 +19,7 @@ description: "Hello GPU 第13章 · benchmark/profiling/编译包成 Agent 可�
 
 ## 13.3 封装 profiling 工具
 
-把 rocprof/Omniperf 包成输入 kernel → 输出瓶颈信号的标准化工具。
+把 rocprof 包成输入 kernel → 输出瓶颈信号的标准化工具。
 
 ## 13.4 封装编译工具
 

@@ -40,8 +40,8 @@ https://datawhalechina.github.io/hello-gpu/
 | [第 3 章 第一个程序 + Roofline 心智模型](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part0-intro/chapter3/index.md) | vector add 跑通、建立性能上限直觉、benchmark 习惯 | 🚧 |
 | **第 1 篇：Profiling 实战** | | |
 | [第 4 章 benchmark 与可信计时](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part1-profiling/chapter4/index.md) | 热身、重复、GPU event、避免测量陷阱 | 🚧 |
-| [第 5 章 rocprof + Omniperf 定位瓶颈](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part1-profiling/chapter5/index.md) | kernel 耗时、访存/占用率计数器、strided 非合并访存反例 | 🚧 |
-| [第 6 章 Roofline 曲线详解 + 性能报告](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part1-profiling/chapter6/index.md) | 把算子点画到 Roofline、解释差距、报告模板 | 🚧 |
+| [第 5 章 用 rocprof 找到慢在哪里](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part1-profiling/chapter5/index.md) | 对照两个 vector add，只看 kernel 时间、工作划分和 stride 趋势 | 🚧 |
+| [第 6 章 读懂 Roofline 图](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part1-profiling/chapter6/index.md) | 看懂参考线、生成工作点并选择排查方向 | 🚧 |
 | **第 2 篇：算子优化 + 刷题** | | |
 | [第 7 章 Reduction：从 naive 到 wavefront](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part2-kernels/chapter7/index.md) | 跨线程归约、LDS 协作、多阶段、HIP/Triton 对比 | 🚧 |
 | [第 8 章 Softmax：数值稳定 + 融合](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part2-kernels/chapter8/index.md) | 减最大值、block 并行、减少写回、HIP/Triton 对比 | 🚧 |

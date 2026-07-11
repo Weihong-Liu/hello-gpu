@@ -317,7 +317,7 @@ PyTorch baseline 和手写 HIP coalesced 两个 vector add 实测点都落在 Ro
 - **它们已经接近斜线本身**——说明 vector add 的访存效率很高（完全合并），优化空间已经不大；想再快只能提高算术强度（融合多个 elementwise 算子，让搬一次数据做更多 FLOP），把工作点**沿斜线往右上方推**，推过拐点后才会进入 compute-bound 区。
 - **两条水平线差距巨大（fp16 是 fp32 的 ~7.5 倍）**——但这个差距对 vector add 毫无意义，因为它在斜线那一侧。只有 GEMM / Attention 这种高算术强度算子（点落在水平线附近）才能吃到 WMMA 的红利——这是后面 [第 9 章 GEMM](../../part2-kernels/chapter9/index.md)、[第 10 章 Flash Attention](../../part2-kernels/chapter10/index.md) 反复要用的判断。
 
-这个对比建立了一个贯穿全书的核心直觉：**判断一个算子优化得好不好，不是看绝对延迟，而是看它离 Roofline 上限有多远、落在斜线还是水平线那一侧**。上面这张图就是这个直觉的可视化——你现在已经会画了。后续 Part 1 的 [第 5 章](../../part1-profiling/chapter5/index.md)、[第 6 章](../../part1-profiling/chapter6/index.md) 会用 profiling 工具解释"为什么这个点没贴满斜线"，Part 2 的每个算子都会在它自己的 Roofline 上画点。
+这个对比建立了一个贯穿全书的核心直觉：**判断一个算子优化得好不好，不是只看绝对延迟，还要看它位于 Roofline 拐点哪一侧、离对应参考线还有多远**。后续 Part 1 的 [第 5 章](../../part1-profiling/chapter5/index.md)、[第 6 章](../../part1-profiling/chapter6/index.md) 会用 profiling 工具比较配置、检查实验变量并解读工作点；Part 2 的每个算子都会继续使用这套方法。
 
 ## 3.5 留下实验底稿
 
@@ -359,7 +359,7 @@ python benchmark_vector_add.py
 | status | PASS |
 ````
 
-看起来朴素，但半年后你回头翻这些记录，会非常感谢现在的自己。后面这本教程会一路写到 Reduction、Softmax、Matmul、Attention，外加 rocprof / Omniperf 一堆 profiling 实验——等到 kernel 版本越积越多、benchmark 配置越改越乱时，**能不能一眼看回当初跑过什么**，往往就是"顺利继续"和"回头返工"的分界线。
+看起来朴素，但半年后你回头翻这些记录，会非常感谢现在的自己。后面这本教程会一路写到 Reduction、Softmax、Matmul、Attention，外加一系列 rocprof 实验——等到 kernel 版本越积越多、benchmark 配置越改越乱时，**能不能一眼看回当初跑过什么**，往往就是"顺利继续"和"回头返工"的分界线。
 
 试一试：把 `--size` 从默认的 `1 << 24` 改成 `1 << 20` 和 `1 << 26`，分别再跑一次 benchmark，把每次的硬件、输入规模、GPU min 延迟和估算带宽随手记到你的实验记录里。先猜一下——GPU 带宽会一直变大、一直变小，还是先升后降？这道题没有标准答案，目的是让你亲手建立"输入规模 vs 性能"的第一感觉，后面 Part 1 会反复用到。
 

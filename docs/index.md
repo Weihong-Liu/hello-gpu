@@ -11,7 +11,7 @@ hero:
 
 features:
   - title: 🔧 AMD First
-    details: 围绕 AMD Radeon RX 9070 XT（RDNA4）/ ROCm 生态设计，覆盖 HIP、rocprof、Omniperf、Triton on AMD
+    details: 围绕 AMD Radeon RX 9070 XT（RDNA4）/ ROCm 生态设计，覆盖 HIP、rocprof、Triton on AMD
   - title: 📊 Profiling-Driven
     details: 先学会「看数据」再学「改代码」——每个优化都有 profiling 数据支撑
   - title: 🧩 刷题导向
