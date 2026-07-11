@@ -142,7 +142,7 @@ if (threadIdx.x < 16) {
 
 另一个相关概念是 **occupancy（占用率）**：一个 SIMD 上同时驻留多少个 wave。RDNA 上一个 SIMD 最多可以驻留多个 wave，让它们轮流"挡延迟"——访存的 wave 先去等数据，计算的 wave 抢上 VALU 干活。但驻留 wave 数受 VGPR、SGPR、LDS 的约束（详见下一节）。这就是为什么我们说 occupancy、VGPR 用量、LDS 用量是绑在一起的三件事。
 
-> **现在不需要手算 occupancy**。你只需要知道：occupancy 反映 GPU 同时塞进多少 wave 来隐藏访存等待；高不一定就好，关键是有没有被 VGPR / LDS 这些资源卡住。后面 [Profiling 篇](../../part1-profiling/chapter5/index.md) 会教你从 rocprof / Omniperf 的输出里看它是被哪个资源限制的。
+> **现在不需要手算 occupancy**。你只需要知道：occupancy 反映 GPU 同时塞进多少 wave 来隐藏访存等待；高不一定就好，关键是有没有被 VGPR / LDS 这些资源卡住。后面 [Profiling 篇](../../part1-profiling/chapter5/index.md) 会结合 `rocprofv3` 的资源占用数据，判断这些资源是否可能成为限制因素。
 
 ## 2.4 VGPR、SGPR 与 LDS 资源
 
@@ -181,7 +181,7 @@ flowchart LR
 VGPR/SGPR/LDS 任何一项打满，都会限制可同时驻留的 wave 数量
 :::
 
-三个资源池中**任何一个**先打满，就决定了 occupancy 的上限。这也是 rocprof / Omniperf 常给出 "VGPR-limited" / "LDS-limited" 这类标签的原因——它在告诉你瓶颈是哪个池子先没水了。
+三个资源池中**任何一个**先打满，就决定了 occupancy 的上限。做 profiling 时，需要把 VGPR、SGPR、LDS 的资源占用放在一起看，判断哪个池子会最先耗尽。
 
 LDS 还有第二个性质：它不是一块纯线性内存，而是**分 bank** 的（多数 AMD GPU 上 32 个 32-bit bank）。同一周期里，如果同一个 wave 内不同 lane 访问到同一个 bank 的不同地址，就会发生 **bank conflict（bank 冲突）**——硬件会串行化访问。LDS 用得好不好的标准之一就是有没有让 bank conflict 控制住。
 
@@ -213,7 +213,7 @@ LDS 还有第二个性质：它不是一块纯线性内存，而是**分 bank** 
 
 - **离 lane 越近越快**：寄存器 > LDS > L1 > L2 > GDDR6。优化的核心思路之一就是**让数据尽量待在离 lane 近的地方**——用寄存器复用、用 LDS 缓存 tile、用合并访存提升 cache 命中率。
 - **GDDR6 不是 HBM**：9070XT 的显存带宽实测约 **510 GB/s**（标称 ~760 GB/s），远低于 HBM 设备（动辄几 TB/s）。这意味着对 9070XT 来说，**memory-bound 算子的优化空间更大也更关键**——很多算子会卡在带宽上。
-- **合并访存（Coalescing）**：连续的线程访问连续的地址时，硬件可以把多次访问合并成一次大事务，充分利用带宽。反之，strided 访问（线程访问间隔地址）会让带宽利用率大跌。这是第 5 章 profiling 会用 strided 反例演示的重点。
+- **合并访存（Coalescing）**：连续的线程访问连续的地址时，硬件可以把多次访问合并成较少的内存事务。第 5 章会用两个 vector add 配置练习 profiling，同时也会检查对照实验是否还改变了线程工作划分。
 
 ## 2.6 L1 / L2 Cache：片上缓存怎么工作
 
@@ -310,7 +310,7 @@ flowchart TD
 
 [第 9 章 GEMM](../../part2-kernels/chapter9/index.md) 会用真实 kernel 把 padding 跑出来对比。
 
-> **怎么发现自己撞了 bank 冲突**：不要靠猜。用 rocprof / Omniperf 看 LDS 相关计数器（如 `SQ_LDS_BANK_CONFLICT`），或故意构造 stride=32 的访问看吞吐在哪里腰斩——具体方法在 [第 5 章](../../part1-profiling/chapter5/index.md) profiling 篇讲。
+> **怎么发现自己撞了 bank 冲突**：不要靠猜。先用 `rocprofv3 -L` 确认当前硬件是否提供可用的 LDS 相关计数器；再构造只改变 LDS 访问方式的对照实验。第 5 章会先练习怎样检查一个对照是否同时改了多个变量，真正的 LDS 对照放到 [第 9 章 GEMM](../../part2-kernels/chapter9/index.md)。
 
 ## 2.8 全局内存合并访存（Coalescing）
 
@@ -357,7 +357,7 @@ flowchart TD
 2. **fp16 / bf16 的算子尽量做向量化 load**：AMD 上常见的 `global_load_dwordx4` 一条指令一个 lane 加载 16 字节，整个 wave 合起来 512 字节——比 4 条 dword 指令少一个数量级的发射开销；
 3. **遇到 transpose / strided slice，把转置或 gather 单独做成一个 kernel**，不要塞进主算子里。
 
-[第 3 章](../chapter3/index.md) 的 vector add 就是全合并的典型（连续线程读连续地址），[第 5 章](../../part1-profiling/chapter5/index.md) 会用一个 strided 反例对比它的代价，[第 7 章 Reduction](../../part2-kernels/chapter7/index.md) 和 [第 9 章 GEMM](../../part2-kernels/chapter9/index.md) 会用真实 kernel 把这三条逐条跑一遍。
+[第 3 章](../chapter3/index.md) 的 vector add 是连续线程读连续地址的典型；[第 5 章](../../part1-profiling/chapter5/index.md) 会用两个配置练习 profiler，并检查对照实验是否足够公平；[第 7 章 Reduction](../../part2-kernels/chapter7/index.md) 和 [第 9 章 GEMM](../../part2-kernels/chapter9/index.md) 会继续应用这些检查方法。
 
 ## 2.9 WMMA：RDNA4 的矩阵加速单元
 

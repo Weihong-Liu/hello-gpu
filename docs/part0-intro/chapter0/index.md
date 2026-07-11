@@ -76,7 +76,7 @@ GPU 算子优化里真正核心的问题，并不归某个厂商独有：
 - profiling 结果能不能撑起优化结论？
 - 自动调参是否真的在当前硬件上变快了？
 
-这些问题在任何平台上都会出现，变的只是工具名、术语和实现细节。沿着 AMD GPU / ROCm 学下来，你会接触 CU、Wavefront、LDS、HIP、rocprof、Omniperf、Triton on AMD 这些概念。一开始可能会觉得有点陌生——没关系，陌生感恰恰说明你正在从"框架使用者"往"算子优化者"的方向走。
+这些问题在任何平台上都会出现，变的只是工具名、术语和实现细节。沿着 AMD GPU / ROCm 学下来，你会接触 CU、Wavefront、LDS、HIP、rocprof、Triton on AMD 这些概念。一开始可能会觉得有点陌生——没关系，陌生感恰恰说明你正在从"框架使用者"往"算子优化者"的方向走。
 
 也提前划一下边界：**这本书不是 CUDA 到 ROCm 的逐 API 翻译手册**。需要时我们会提一笔 HIP 和 CUDA 的对应关系，但不会把每一节写成对照表。你的注意力应该花在更值钱的问题上：
 
@@ -151,7 +151,7 @@ flowchart LR
 | 阶段 | 你会学到 | 学完能做什么 |
 | ---- | ---- | ---- |
 | 入门（第 0 篇）| 9070XT 环境、GPU 体系结构速通、第一个程序 | 跑通环境，建立 Roofline 心智模型 |
-| Profiling（第 1 篇）| benchmark、rocprof、Omniperf、性能报告 | 用证据说明算子慢在哪里 |
+| Profiling（第 1 篇）| benchmark、rocprof、性能记录 | 用数据说明算子慢在哪里 |
 | 算子 + 刷题（第 2 篇）| Reduction / Softmax / GEMM / Flash Attention + 刷题方法论 | 把一个 naive kernel 一步步优化到接近硬件极限 |
 | Agent 算子层（第 3 篇）| Agent 入门、工具封装、多轮优化 | 让 Agent 自动把一个 naive kernel 优化 3-5 倍 |
 | 真实模型 + Agent（第 4 篇）| YOLO / LLM 部署 + Agent 自动优化 | 让 Agent 对真实模型做性能优化 |
@@ -165,7 +165,7 @@ flowchart LR
 | 篇 | 你要学什么 | 学完能做什么 | 大约时间 |
 | ---- | ---- | ---- | ---- |
 | 第 0 篇 入门 | 环境验证、GPU 体系结构、第一个程序 | 跑通环境，建立硬件直觉 | 1-2 天 |
-| 第 1 篇 Profiling | benchmark、rocprof、Omniperf、报告 | 用证据定位瓶颈 | 2-3 天 |
+| 第 1 篇 Profiling | benchmark、rocprof、性能记录 | 找到 kernel 慢在哪里 | 2-3 天 |
 | 第 2 篇 算子 + 刷题 | Reduction / Softmax / GEMM / Attention + 刷题 | 从 naive 优化到接近极限 | 5-7 天 |
 | 第 3 篇 Agent 算子层 | Agent 入门、工具封装、多轮优化 | 让 Agent 自动优化 kernel | 3-4 天 |
 | 第 4 篇 真实模型 + Agent | YOLO / LLM + Agent 优化 | 对真实模型做自动优化 | 3-4 天 |

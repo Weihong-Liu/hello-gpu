@@ -60,14 +60,15 @@ __global__ void kernel_strided(const float* __restrict__ a,
     }
 }
 
-// linecross：真正的跨 cache line 跨步反例（公平对比版）。
+// linecross：制造跨 cache line 访问的教学反例。
 //   每个 wavefront 负责【连续】的 W*stride 个输出位置 [tile_base, tile_base+W*stride)，
 //   把它们切成 W 段，每段 stride 个连续元素，交给一个 lane：
 //     lane k 处理 [tile_base + k*stride, tile_base + (k+1)*stride) 这 stride 个元素。
 //   这样相邻 lane 的起始地址相距 stride*4 字节：
 //     - stride <  32：相邻 lane 落在/接近同一 cache line（合并）
 //     - stride >= 32：相邻 lane 落在不同 cache line（跨步，合并被破坏）
-//   每个元素仍按 c[i]=a[i]+b[i] 计算（一一对应），总搬运字节数与 coalesced 完全相同。
+//   每个元素仍按 c[i]=a[i]+b[i] 计算，但 stride 还会同时改变每线程循环次数和 grid。
+//   因此它适合观察组合趋势，不是只改变访存合并度的严格单变量对照。
 __global__ void kernel_linecross(const float* __restrict__ a,
                                  const float* __restrict__ b,
                                  float*       __restrict__ c,

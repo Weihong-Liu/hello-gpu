@@ -55,7 +55,7 @@ flowchart LR
 
 如 @fig-measure-loop 所示，优化不是从改代码开始，而是从定义问题和设计测量开始。否则你很容易进入一种状态：代码改了很多，数字也变了，但没人知道到底是哪一步起作用。
 
-这也是为什么本书反复强调一条工作节奏：先理解硬件和系统，再收集证据，再提出优化，最后把流程固化下来。Part 1（profiling 篇）就是在补齐其中的 Profiling 这一环，本章先把「怎么量准」讲清楚，[下一章](../chapter5/index.md) 会用一个 vector add 的合并版 vs strided 版案例，把 benchmark 和 rocprof / Omniperf 工具串成完整闭环。
+这也是为什么本书反复强调一条工作节奏：先理解硬件和系统，再量准时间，再找到慢点，最后只改一个变量做验证。Part 1（profiling 篇）就是在练习这条路线。本章先把「怎么量准」讲清楚，[下一章](../chapter5/index.md) 会用两个 vector add 版本，把 benchmark 和 `rocprofv3` 接起来。
 
 ## 4.2 热身与缓存效应
 
@@ -317,13 +317,11 @@ int main() {
 
 - `hipEvent_t` 的精度足够量到 μs 级 kernel；
 - 一定要 `hipEventSynchronize` 之后再读 elapsed time，否则 host 还在拿着 stale 值；
-- [第 5 章](../chapter5/index.md) 会把这个骨架挂到 rocprof / PyTorch Profiler 上做完整链路。
+- [第 5 章](../chapter5/index.md) 会沿用这个计时骨架，再用 `rocprofv3` 核对 kernel 时间。
 
 ### 实测数字（Radeon RX 9070 XT + ROCm 7.13）
 
 下面这张表是用 [`bench_ch4.py`](https://github.com/datawhalechina/hello-gpu/blob/dev/code/part1-profiling/chapter4/bench_ch4.py)（综合了上面骨架 A / B 两段流程）在 9070XT（gfx1201 / ROCm 7.13 / 原生 Ubuntu 24.04）上跑出来的实测值：
-
-> **环境提醒**：骨架 B 用到 Triton，Triton JIT 编译 driver 时需要 `Python.h`。这是系统开发头文件，不是 Python wheel，`uv sync` 装不了。原生 Ubuntu 最小安装缺这个包，实验机初始化时先执行 `sudo apt install -y build-essential libstdc++-14-dev python3-dev`（详见仓库内 `.docs-rules/03-environment.md` §3，该文件不随站点发布）。
 
 <details>
 <summary>实测输出：Ch4 benchmark @ 9070XT + ROCm 7.13（原生 Ubuntu 24.04）</summary>
@@ -419,12 +417,11 @@ hipcc: 7.13.99004 / arch gfx1201 / 原生 Ubuntu 24.04 (6.17.0-35-generic)
 - 单次结果不可信，要 repeat 多次并汇总 mean / median / min / p95 / std；波动大时先修测量方法，而不是急着优化代码。
 - GPU 任务是异步提交的，必须用 GPU event（`torch.cuda.Event` / `hipEvent_t`）而不是 `time.time()` 量 kernel 真实耗时；本章给出 PyTorch / Triton / HIP 三段最小骨架。
 - 伪优化有很多伪装（缓存命中、launch overhead、改 dtype 只省了 byte、print 意外同步……），核心对策是「让实验可复查」和「先建立可信 baseline」。
-- [下一章](../chapter5/index.md) 会用一个 vector add 的合并版 vs strided 版案例，把本章的 benchmark 流程和 rocprof / Omniperf 串成「测量 → 定位 → 假设」的完整闭环。
+- [下一章](../chapter5/index.md) 会用两个 vector add 版本，把本章的 benchmark 流程和 `rocprofv3` 串成「量准 → 找到慢点 → 验证」的完整路线。
 
 ## 延伸阅读
 
 - [HIP Performance Guidelines](https://rocm.docs.amd.com/projects/HIP/en/latest/how-to/performance_guidelines.html)
 - [HIP Programming Guide](https://rocm.docs.amd.com/projects/HIP/en/latest/) — HIP 编程模型与计时 API 入口
-- [PyTorch Profiler 文档](https://docs.pytorch.org/docs/stable/profiler.html) — [第 5 章](../chapter5/index.md) 会正式用到
+- [PyTorch Profiler 文档](https://docs.pytorch.org/docs/stable/profiler.html)
 - [ROCm Documentation](https://rocm.docs.amd.com/)
-- [ROCm Compute Profiler (Omniperf) Documentation](https://rocm.docs.amd.com/projects/omniperf/en/latest/) — [第 5 章](../chapter5/index.md) 会用到

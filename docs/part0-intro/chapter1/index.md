@@ -62,7 +62,7 @@ code/part0-intro/
 
 - ✅ `rocminfo`、`hipcc`、`hipMalloc`、PyTorch ROCm、Triton 这些**计算路径通常可用**。
 - ❌ **`rocm-smi` 和 `amd-smi` 都不可用**。WSL2 内核没有加载 `amdgpu` 驱动模块（通过 `/dev/dxg` 暴露 GPU），两个工具都会报 `Driver not initialized (amdgpu not found in modules)`。
-- ❌ 硬件性能计数器不可作为可用前提，后续 `rocprofv3 --pmc` / Omniperf 相关章节请以原生 Linux 为准。
+- ❌ 硬件性能计数器不可作为可用前提，后续 `rocprofv3 --pmc` 相关章节请以原生 Linux 为准。
 
 所以本章在「验证 GPU 可见性」那一步只依赖 `rocminfo`，不把 `rocm-smi` / `amd-smi` 作为必需步骤。如果你后续想看显存占用、温度、功耗这类运行时状态，原生 Linux 上可以用（典型输出见下方 §1.4），WSL2 上两个工具都不行。
 :::
