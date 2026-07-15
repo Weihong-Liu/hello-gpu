@@ -164,7 +164,7 @@ if __name__ == "__main__":
 | 优化手段 | 适用题型 | 对应章节 |
 | ---- | ---- | ---- |
 | 合并访存（连续线程读连续地址）| 所有 | [第 2 章 §2.8](../../part0-intro/chapter2/index.md) |
-| 向量化加载（`float4` / `global_load_dwordx4`）| elementwise / reduction | [第 7 章 §7.5](../chapter7/index.md) |
+| 寄存器局部累加（减少组内归约前的值）| reduction | [第 7 章 §7.4](../chapter7/index.md) |
 | LDS 缓存 tile（减少全局内存重复读）| GEMM / 融合型 | [第 9 章 §9.4](../chapter9/index.md) |
 | 融合多个 kernel（减少中间写回）| softmax / attention | [第 8 章 §8.4](../chapter8/index.md) |
 
@@ -219,12 +219,11 @@ flowchart TD
 
 - **Softmax 溢出**：忘了减最大值。解法：`x - x.max()`。
 - **fp16 精度不足**：中间累加用 fp32，最后再转 fp16。解法：Triton 的 `tl.dot` 默认 fp32 累加。
-- **Reduction 浮点不满足结合律**：`atomicAdd` 顺序不确定导致结果飘。解法：用分层归约（[第 7 章 v4](../chapter7/index.md)）。
+- **Reduction 浮点不满足结合律**：不同归约顺序的最后几位可能不同。解法：使用高精度参考值和合理容差检查（[第 7 章 §7.1.2](../chapter7/index.md)）。
 
 ### 3. bank 冲突
 
 - **GEMM tile 列读撞 bank**：LDS 行主存、列主读。解法：padding `+1` 或 XOR swizzle（[第 2 章 §2.7](../../part0-intro/chapter2/index.md)）。
-- **Reduction 树 stride 变小时撞 bank**：归约到后半段 stride < 32 时可能冲突。
 
 ### 4. occupancy 不足
 

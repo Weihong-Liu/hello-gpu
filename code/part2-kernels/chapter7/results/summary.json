@@ -1,0 +1,733 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-07-11T16:12:02.005473+00:00",
+  "measurement_model": {
+    "event_statistic_for_useful_metrics": "median_ms",
+    "useful_flops": "N - 1",
+    "useful_bytes": "4 * N + 4",
+    "boundary": "useful bytes are an algorithm-level comparison model, not measured DRAM, cache, atomic, or partial-buffer traffic"
+  },
+  "profile_selection": {
+    "precheck_logical_runs": 1,
+    "warmup_logical_runs": 0,
+    "timed_logical_runs": 10,
+    "config": {
+      "size": 1048576,
+      "hip_block": 256,
+      "triton_block": 1024,
+      "warmup": 0,
+      "repeat": 10,
+      "seed": 20260711,
+      "gpu_arch": "gfx1201"
+    }
+  },
+  "implementations": [
+    {
+      "key": "hip-v0",
+      "event": {
+        "backend": "hip",
+        "implementation": "v0",
+        "size": 1048576,
+        "grid": 4096,
+        "block": 256,
+        "stages": 1,
+        "minimum_ms": 2.180393,
+        "median_ms": 2.181375,
+        "mean_ms": 2.18717,
+        "timed": true,
+        "correct": true,
+        "precheck_correct": true,
+        "postcheck_correct": true,
+        "result": 2621440.0,
+        "expected": 2621440.0,
+        "absolute_error": 0.0,
+        "source_files": [
+          "logs/runs/hip_run1.log",
+          "logs/runs/hip_run2.log",
+          "logs/runs/hip_run3.log"
+        ],
+        "independent_runs": {
+          "count": 3,
+          "minimum_ms_values": [
+            2.180393,
+            2.180515,
+            2.173354
+          ],
+          "median_ms_values": [
+            2.181394,
+            2.181375,
+            2.181354
+          ],
+          "mean_ms_values": [
+            2.187198,
+            2.18717,
+            2.187025
+          ],
+          "median_ms_range": {
+            "minimum_ms": 2.181354,
+            "maximum_ms": 2.181394,
+            "span_ms": 4.000000000026205e-05
+          },
+          "aggregation": "median of per-process statistics"
+        },
+        "useful_metrics": {
+          "flops": 1048575,
+          "bytes": 4194308,
+          "arithmetic_intensity_flop_per_byte": 0.24999952316329654,
+          "based_on": "event_median_ms",
+          "bandwidth_gb_s": 1.9227817317059195,
+          "gflop_s": 0.48069451607357744
+        }
+      },
+      "trace": {
+        "source_file": "profiles/hip-v0_kernel_trace.csv",
+        "candidate_files": [
+          "profiles/hip-v0_kernel_trace.csv"
+        ],
+        "matching_dispatch_count": 11,
+        "selected_dispatch_count": 11,
+        "expected_dispatch_count": 11,
+        "stages_per_logical_run": 1,
+        "precheck_logical_runs": 1,
+        "warmup_logical_runs": 0,
+        "requested_timed_logical_runs": 10,
+        "timed_logical_duration": {
+          "samples": 10,
+          "minimum_ms": 2.166608,
+          "median_ms": 2.166768,
+          "mean_ms": 2.1670285
+        },
+        "kernels": [
+          {
+            "kernel_name": "(anonymous namespace)::reduce_v0_atomic(float const*, float*, unsigned long)",
+            "dispatch_count": 11,
+            "grid_size": 1048576,
+            "workgroup_size": 256,
+            "vgpr_count": 8,
+            "accum_vgpr_count": 0,
+            "sgpr_count": 128,
+            "lds_block_size_bytes": 0,
+            "scratch_size_bytes": 0,
+            "duration": {
+              "samples": 11,
+              "minimum_ms": 2.166608,
+              "median_ms": 2.166768,
+              "mean_ms": 2.2249665454545453
+            }
+          }
+        ]
+      }
+    },
+    {
+      "key": "hip-v1",
+      "event": {
+        "backend": "hip",
+        "implementation": "v1",
+        "size": 1048576,
+        "grid": 4096,
+        "block": 256,
+        "stages": 1,
+        "minimum_ms": 0.279004,
+        "median_ms": 0.279205,
+        "mean_ms": 0.279229,
+        "timed": true,
+        "correct": true,
+        "precheck_correct": true,
+        "postcheck_correct": true,
+        "result": 2621440.0,
+        "expected": 2621440.0,
+        "absolute_error": 0.0,
+        "source_files": [
+          "logs/runs/hip_run1.log",
+          "logs/runs/hip_run2.log",
+          "logs/runs/hip_run3.log"
+        ],
+        "independent_runs": {
+          "count": 3,
+          "minimum_ms_values": [
+            0.279004,
+            0.278965,
+            0.279004
+          ],
+          "median_ms_values": [
+            0.279205,
+            0.279205,
+            0.279205
+          ],
+          "mean_ms_values": [
+            0.279246,
+            0.279204,
+            0.279229
+          ],
+          "median_ms_range": {
+            "minimum_ms": 0.279205,
+            "maximum_ms": 0.279205,
+            "span_ms": 0.0
+          },
+          "aggregation": "median of per-process statistics"
+        },
+        "useful_metrics": {
+          "flops": 1048575,
+          "bytes": 4194308,
+          "arithmetic_intensity_flop_per_byte": 0.24999952316329654,
+          "based_on": "event_median_ms",
+          "bandwidth_gb_s": 15.022324098780466,
+          "gflop_s": 3.755573861499615
+        }
+      },
+      "trace": {
+        "source_file": "profiles/hip-v1_kernel_trace.csv",
+        "candidate_files": [
+          "profiles/hip-v1_kernel_trace.csv"
+        ],
+        "matching_dispatch_count": 11,
+        "selected_dispatch_count": 11,
+        "expected_dispatch_count": 11,
+        "stages_per_logical_run": 1,
+        "precheck_logical_runs": 1,
+        "warmup_logical_runs": 0,
+        "requested_timed_logical_runs": 10,
+        "timed_logical_duration": {
+          "samples": 10,
+          "minimum_ms": 0.273126,
+          "median_ms": 0.273247,
+          "mean_ms": 0.2732587
+        },
+        "kernels": [
+          {
+            "kernel_name": "(anonymous namespace)::reduce_v1_lds_atomic(float const*, float*, unsigned long)",
+            "dispatch_count": 11,
+            "grid_size": 1048576,
+            "workgroup_size": 256,
+            "vgpr_count": 8,
+            "accum_vgpr_count": 0,
+            "sgpr_count": 128,
+            "lds_block_size_bytes": 0,
+            "scratch_size_bytes": 0,
+            "duration": {
+              "samples": 11,
+              "minimum_ms": 0.273126,
+              "median_ms": 0.273247,
+              "mean_ms": 0.28231236363636364
+            }
+          }
+        ]
+      }
+    },
+    {
+      "key": "hip-v2",
+      "event": {
+        "backend": "hip",
+        "implementation": "v2",
+        "size": 1048576,
+        "grid": 256,
+        "block": 256,
+        "stages": 1,
+        "minimum_ms": 0.028361,
+        "median_ms": 0.02854,
+        "mean_ms": 0.028556,
+        "timed": true,
+        "correct": true,
+        "precheck_correct": true,
+        "postcheck_correct": true,
+        "result": 2621440.0,
+        "expected": 2621440.0,
+        "absolute_error": 0.0,
+        "source_files": [
+          "logs/runs/hip_run1.log",
+          "logs/runs/hip_run2.log",
+          "logs/runs/hip_run3.log"
+        ],
+        "independent_runs": {
+          "count": 3,
+          "minimum_ms_values": [
+            0.0284,
+            0.02836,
+            0.028361
+          ],
+          "median_ms_values": [
+            0.028521,
+            0.02854,
+            0.02856
+          ],
+          "mean_ms_values": [
+            0.028556,
+            0.028546,
+            0.028556
+          ],
+          "median_ms_range": {
+            "minimum_ms": 0.028521,
+            "maximum_ms": 0.02856,
+            "span_ms": 3.899999999999737e-05
+          },
+          "aggregation": "median of per-process statistics"
+        },
+        "useful_metrics": {
+          "flops": 1048575,
+          "bytes": 4194308,
+          "arithmetic_intensity_flop_per_byte": 0.24999952316329654,
+          "based_on": "event_median_ms",
+          "bandwidth_gb_s": 146.9624386825508,
+          "gflop_s": 36.74053959355291
+        }
+      },
+      "trace": {
+        "source_file": "profiles/hip-v2_kernel_trace.csv",
+        "candidate_files": [
+          "profiles/hip-v2_kernel_trace.csv"
+        ],
+        "matching_dispatch_count": 11,
+        "selected_dispatch_count": 11,
+        "expected_dispatch_count": 11,
+        "stages_per_logical_run": 1,
+        "precheck_logical_runs": 1,
+        "warmup_logical_runs": 0,
+        "requested_timed_logical_runs": 10,
+        "timed_logical_duration": {
+          "samples": 10,
+          "minimum_ms": 0.02324,
+          "median_ms": 0.029821,
+          "mean_ms": 0.0280124
+        },
+        "kernels": [
+          {
+            "kernel_name": "(anonymous namespace)::reduce_v2_grid_stride_lds_atomic(float const*, float*, unsigned long)",
+            "dispatch_count": 11,
+            "grid_size": 65536,
+            "workgroup_size": 256,
+            "vgpr_count": 8,
+            "accum_vgpr_count": 0,
+            "sgpr_count": 128,
+            "lds_block_size_bytes": 0,
+            "scratch_size_bytes": 0,
+            "duration": {
+              "samples": 11,
+              "minimum_ms": 0.02324,
+              "median_ms": 0.029881,
+              "mean_ms": 0.028269545454545453
+            }
+          }
+        ]
+      }
+    },
+    {
+      "key": "hip-v3",
+      "event": {
+        "backend": "hip",
+        "implementation": "v3",
+        "size": 1048576,
+        "grid": 256,
+        "block": 256,
+        "stages": 1,
+        "minimum_ms": 0.02808,
+        "median_ms": 0.02824,
+        "mean_ms": 0.02826,
+        "timed": true,
+        "correct": true,
+        "precheck_correct": true,
+        "postcheck_correct": true,
+        "result": 2621440.0,
+        "expected": 2621440.0,
+        "absolute_error": 0.0,
+        "source_files": [
+          "logs/runs/hip_run1.log",
+          "logs/runs/hip_run2.log",
+          "logs/runs/hip_run3.log"
+        ],
+        "independent_runs": {
+          "count": 3,
+          "minimum_ms_values": [
+            0.02808,
+            0.02804,
+            0.02812
+          ],
+          "median_ms_values": [
+            0.02826,
+            0.028161,
+            0.02824
+          ],
+          "mean_ms_values": [
+            0.028277,
+            0.028184,
+            0.02826
+          ],
+          "median_ms_range": {
+            "minimum_ms": 0.028161,
+            "maximum_ms": 0.02826,
+            "span_ms": 9.900000000000186e-05
+          },
+          "aggregation": "median of per-process statistics"
+        },
+        "useful_metrics": {
+          "flops": 1048575,
+          "bytes": 4194308,
+          "arithmetic_intensity_flop_per_byte": 0.24999952316329654,
+          "based_on": "event_median_ms",
+          "bandwidth_gb_s": 148.52365439093484,
+          "gflop_s": 37.13084277620396
+        }
+      },
+      "trace": {
+        "source_file": "profiles/hip-v3_kernel_trace.csv",
+        "candidate_files": [
+          "profiles/hip-v3_kernel_trace.csv"
+        ],
+        "matching_dispatch_count": 11,
+        "selected_dispatch_count": 11,
+        "expected_dispatch_count": 11,
+        "stages_per_logical_run": 1,
+        "precheck_logical_runs": 1,
+        "warmup_logical_runs": 0,
+        "requested_timed_logical_runs": 10,
+        "timed_logical_duration": {
+          "samples": 10,
+          "minimum_ms": 0.02024,
+          "median_ms": 0.02034,
+          "mean_ms": 0.020372
+        },
+        "kernels": [
+          {
+            "kernel_name": "(anonymous namespace)::reduce_v3_wave_atomic(float const*, float*, unsigned long)",
+            "dispatch_count": 11,
+            "grid_size": 65536,
+            "workgroup_size": 256,
+            "vgpr_count": 16,
+            "accum_vgpr_count": 0,
+            "sgpr_count": 128,
+            "lds_block_size_bytes": 0,
+            "scratch_size_bytes": 0,
+            "duration": {
+              "samples": 11,
+              "minimum_ms": 0.02024,
+              "median_ms": 0.02036,
+              "mean_ms": 0.020443636363636362
+            }
+          }
+        ]
+      }
+    },
+    {
+      "key": "hip-v4",
+      "event": {
+        "backend": "hip",
+        "implementation": "v4",
+        "size": 1048576,
+        "grid": 256,
+        "block": 256,
+        "stages": 2,
+        "minimum_ms": 0.02336,
+        "median_ms": 0.02376,
+        "mean_ms": 0.023791,
+        "timed": true,
+        "correct": true,
+        "precheck_correct": true,
+        "postcheck_correct": true,
+        "result": 2621440.0,
+        "expected": 2621440.0,
+        "absolute_error": 0.0,
+        "source_files": [
+          "logs/runs/hip_run1.log",
+          "logs/runs/hip_run2.log",
+          "logs/runs/hip_run3.log"
+        ],
+        "independent_runs": {
+          "count": 3,
+          "minimum_ms_values": [
+            0.023441,
+            0.02332,
+            0.02336
+          ],
+          "median_ms_values": [
+            0.023801,
+            0.02376,
+            0.023721
+          ],
+          "mean_ms_values": [
+            0.023825,
+            0.02374,
+            0.023791
+          ],
+          "median_ms_range": {
+            "minimum_ms": 0.023721,
+            "maximum_ms": 0.023801,
+            "span_ms": 8.000000000000021e-05
+          },
+          "aggregation": "median of per-process statistics"
+        },
+        "useful_metrics": {
+          "flops": 1048575,
+          "bytes": 4194308,
+          "arithmetic_intensity_flop_per_byte": 0.24999952316329654,
+          "based_on": "event_median_ms",
+          "bandwidth_gb_s": 176.52811447811447,
+          "gflop_s": 44.13194444444444
+        }
+      },
+      "trace": {
+        "source_file": "profiles/hip-v4_kernel_trace.csv",
+        "candidate_files": [
+          "profiles/hip-v4_kernel_trace.csv"
+        ],
+        "matching_dispatch_count": 22,
+        "selected_dispatch_count": 22,
+        "expected_dispatch_count": 22,
+        "stages_per_logical_run": 2,
+        "precheck_logical_runs": 1,
+        "warmup_logical_runs": 0,
+        "requested_timed_logical_runs": 10,
+        "timed_logical_duration": {
+          "samples": 10,
+          "minimum_ms": 0.020201,
+          "median_ms": 0.020740500000000002,
+          "mean_ms": 0.020760400000000002
+        },
+        "kernels": [
+          {
+            "kernel_name": "(anonymous namespace)::reduce_v4_partials(float const*, float*, unsigned long)",
+            "dispatch_count": 11,
+            "grid_size": 65536,
+            "workgroup_size": 256,
+            "vgpr_count": 16,
+            "accum_vgpr_count": 0,
+            "sgpr_count": 128,
+            "lds_block_size_bytes": 0,
+            "scratch_size_bytes": 0,
+            "duration": {
+              "samples": 11,
+              "minimum_ms": 0.014041,
+              "median_ms": 0.01448,
+              "mean_ms": 0.014633
+            }
+          },
+          {
+            "kernel_name": "(anonymous namespace)::reduce_v4_partials(float const*, float*, unsigned long)",
+            "dispatch_count": 11,
+            "grid_size": 256,
+            "workgroup_size": 256,
+            "vgpr_count": 16,
+            "accum_vgpr_count": 0,
+            "sgpr_count": 128,
+            "lds_block_size_bytes": 0,
+            "scratch_size_bytes": 0,
+            "duration": {
+              "samples": 11,
+              "minimum_ms": 0.00212,
+              "median_ms": 0.00232,
+              "mean_ms": 0.002287272727272727
+            }
+          }
+        ]
+      }
+    },
+    {
+      "key": "triton-atomic",
+      "event": {
+        "backend": "triton",
+        "implementation": "atomic",
+        "size": 1048576,
+        "grid": null,
+        "block": 1024,
+        "stages": 1,
+        "minimum_ms": 0.076921,
+        "median_ms": 0.078081,
+        "mean_ms": 0.077923,
+        "timed": true,
+        "correct": true,
+        "precheck_correct": true,
+        "postcheck_correct": true,
+        "result": 2621440.0,
+        "expected": 2621440.0,
+        "absolute_error": 0.0,
+        "source_files": [
+          "logs/runs/triton_run1.log",
+          "logs/runs/triton_run2.log",
+          "logs/runs/triton_run3.log"
+        ],
+        "independent_runs": {
+          "count": 3,
+          "minimum_ms_values": [
+            0.076401,
+            0.076921,
+            0.077001
+          ],
+          "median_ms_values": [
+            0.077721,
+            0.078141,
+            0.078081
+          ],
+          "mean_ms_values": [
+            0.077729,
+            0.077923,
+            0.081362
+          ],
+          "median_ms_range": {
+            "minimum_ms": 0.077721,
+            "maximum_ms": 0.078141,
+            "span_ms": 0.0004200000000000037
+          },
+          "aggregation": "median of per-process statistics"
+        },
+        "useful_metrics": {
+          "flops": 1048575,
+          "bytes": 4194308,
+          "arithmetic_intensity_flop_per_byte": 0.24999952316329654,
+          "based_on": "event_median_ms",
+          "bandwidth_gb_s": 53.71739603744829,
+          "gflop_s": 13.429323394936027
+        }
+      },
+      "trace": {
+        "source_file": "profiles/triton-atomic_kernel_trace.csv",
+        "candidate_files": [
+          "profiles/triton-atomic_kernel_trace.csv"
+        ],
+        "matching_dispatch_count": 11,
+        "selected_dispatch_count": 11,
+        "expected_dispatch_count": 11,
+        "stages_per_logical_run": 1,
+        "precheck_logical_runs": 1,
+        "warmup_logical_runs": 0,
+        "requested_timed_logical_runs": 10,
+        "timed_logical_duration": {
+          "samples": 10,
+          "minimum_ms": 0.071121,
+          "median_ms": 0.0711415,
+          "mean_ms": 0.0888818
+        },
+        "kernels": [
+          {
+            "kernel_name": "reduce_atomic_kernel",
+            "dispatch_count": 11,
+            "grid_size": 131072,
+            "workgroup_size": 128,
+            "vgpr_count": 16,
+            "accum_vgpr_count": 0,
+            "sgpr_count": 128,
+            "lds_block_size_bytes": 0,
+            "scratch_size_bytes": 0,
+            "duration": {
+              "samples": 11,
+              "minimum_ms": 0.071121,
+              "median_ms": 0.071161,
+              "mean_ms": 0.1019439090909091
+            }
+          }
+        ]
+      }
+    },
+    {
+      "key": "triton-multistage",
+      "event": {
+        "backend": "triton",
+        "implementation": "multistage",
+        "size": 1048576,
+        "grid": null,
+        "block": 1024,
+        "stages": 2,
+        "minimum_ms": 0.015041,
+        "median_ms": 0.02184,
+        "mean_ms": 0.022199,
+        "timed": true,
+        "correct": true,
+        "precheck_correct": true,
+        "postcheck_correct": true,
+        "result": 2621440.0,
+        "expected": 2621440.0,
+        "absolute_error": 0.0,
+        "source_files": [
+          "logs/runs/triton_run1.log",
+          "logs/runs/triton_run2.log",
+          "logs/runs/triton_run3.log"
+        ],
+        "independent_runs": {
+          "count": 3,
+          "minimum_ms_values": [
+            0.0142,
+            0.015041,
+            0.015041
+          ],
+          "median_ms_values": [
+            0.02184,
+            0.01728,
+            0.02238
+          ],
+          "mean_ms_values": [
+            0.021658,
+            0.022199,
+            0.022724
+          ],
+          "median_ms_range": {
+            "minimum_ms": 0.01728,
+            "maximum_ms": 0.02238,
+            "span_ms": 0.0051
+          },
+          "aggregation": "median of per-process statistics"
+        },
+        "useful_metrics": {
+          "flops": 1048575,
+          "bytes": 4194308,
+          "arithmetic_intensity_flop_per_byte": 0.24999952316329654,
+          "based_on": "event_median_ms",
+          "bandwidth_gb_s": 192.0470695970696,
+          "gflop_s": 48.011675824175825
+        }
+      },
+      "trace": {
+        "source_file": "profiles/triton-multistage_kernel_trace.csv",
+        "candidate_files": [
+          "profiles/triton-multistage_kernel_trace.csv"
+        ],
+        "matching_dispatch_count": 22,
+        "selected_dispatch_count": 22,
+        "expected_dispatch_count": 22,
+        "stages_per_logical_run": 2,
+        "precheck_logical_runs": 1,
+        "warmup_logical_runs": 0,
+        "requested_timed_logical_runs": 10,
+        "timed_logical_duration": {
+          "samples": 10,
+          "minimum_ms": 0.01192,
+          "median_ms": 0.019459999999999998,
+          "mean_ms": 0.0206084
+        },
+        "kernels": [
+          {
+            "kernel_name": "reduce_chunks_kernel",
+            "dispatch_count": 11,
+            "grid_size": 131072,
+            "workgroup_size": 128,
+            "vgpr_count": 16,
+            "accum_vgpr_count": 0,
+            "sgpr_count": 128,
+            "lds_block_size_bytes": 0,
+            "scratch_size_bytes": 0,
+            "duration": {
+              "samples": 11,
+              "minimum_ms": 0.00516,
+              "median_ms": 0.0108,
+              "mean_ms": 0.013523909090909092
+            }
+          },
+          {
+            "kernel_name": "reduce_chunks_kernel",
+            "dispatch_count": 11,
+            "grid_size": 128,
+            "workgroup_size": 128,
+            "vgpr_count": 16,
+            "accum_vgpr_count": 0,
+            "sgpr_count": 128,
+            "lds_block_size_bytes": 0,
+            "scratch_size_bytes": 0,
+            "duration": {
+              "samples": 11,
+              "minimum_ms": 0.0024,
+              "median_ms": 0.0026,
+              "mean_ms": 0.0027345454545454543
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "warnings": []
+}

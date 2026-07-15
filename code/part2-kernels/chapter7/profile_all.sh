@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PART_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+LOG_DIR="${SCRIPT_DIR}/logs"
+PROFILE_DIR="${SCRIPT_DIR}/profiles"
+GPU_ARCH="${GPU_ARCH:-gfx1201}"
+SIZE="${SIZE:-1048576}"
+HIP_BLOCK="${HIP_BLOCK:-256}"
+TRITON_BLOCK="${TRITON_BLOCK:-1024}"
+PROFILE_WARMUP="${PROFILE_WARMUP:-0}"
+PROFILE_REPEAT="${PROFILE_REPEAT:-10}"
+SEED="${SEED:-20260711}"
+HIP_BINARY="${SCRIPT_DIR}/reduction_hip"
+
+mkdir -p "${LOG_DIR}" "${PROFILE_DIR}"
+
+if [[ ! -f "${PART_DIR}/activate-rocm.sh" ]]; then
+    echo "missing ${PART_DIR}/activate-rocm.sh" >&2
+    exit 1
+fi
+
+# shellcheck source=/dev/null
+source "${PART_DIR}/activate-rocm.sh"
+
+bash "${SCRIPT_DIR}/collect_environment.sh" \
+    2>&1 | tee "${LOG_DIR}/profile_environment.log"
+
+hipcc \
+    --offload-arch="${GPU_ARCH}" \
+    -O3 \
+    -std=c++17 \
+    "${SCRIPT_DIR}/reduction_hip.hip" \
+    -o "${HIP_BINARY}" \
+    2>&1 | tee "${LOG_DIR}/profile_hip_compile.log"
+
+profile_command() {
+    local label="$1"
+    shift
+
+    echo "profiling ${label}"
+    rocprofv3 \
+        --kernel-trace \
+        --output-directory "${PROFILE_DIR}" \
+        --output-file "${label}" \
+        --output-format csv \
+        -- "$@" \
+        2>&1 | tee "${LOG_DIR}/profile_${label}.log"
+}
+
+for version in v0 v1 v2 v3 v4; do
+    hip_args=(
+        --version "${version}"
+        --size "${SIZE}"
+        --block "${HIP_BLOCK}"
+        --warmup "${PROFILE_WARMUP}"
+        --repeat "${PROFILE_REPEAT}"
+        --seed "${SEED}"
+    )
+    if [[ -n "${GRID:-}" ]]; then
+        hip_args+=(--grid "${GRID}")
+    fi
+    profile_command "hip-${version}" "${HIP_BINARY}" "${hip_args[@]}"
+done
+
+# Populate Triton's disk cache and fail early on correctness before starting
+# separate profiler processes.
+python "${SCRIPT_DIR}/reduction_triton.py" \
+    --version all \
+    --size "${SIZE}" \
+    --block "${TRITON_BLOCK}" \
+    --warmup 0 \
+    --repeat 1 \
+    --seed "${SEED}" \
+    2>&1 | tee "${LOG_DIR}/profile_triton_precheck.log"
+
+for version in atomic multistage; do
+    profile_command "triton-${version}" \
+        python "${SCRIPT_DIR}/reduction_triton.py" \
+        --version "${version}" \
+        --size "${SIZE}" \
+        --block "${TRITON_BLOCK}" \
+        --warmup "${PROFILE_WARMUP}" \
+        --repeat "${PROFILE_REPEAT}" \
+        --seed "${SEED}"
+done
+
+{
+    echo "size=${SIZE}"
+    echo "hip_block=${HIP_BLOCK}"
+    echo "triton_block=${TRITON_BLOCK}"
+    echo "warmup=${PROFILE_WARMUP}"
+    echo "repeat=${PROFILE_REPEAT}"
+    echo "seed=${SEED}"
+    echo "gpu_arch=${GPU_ARCH}"
+    if [[ -n "${GRID:-}" ]]; then
+        echo "grid=${GRID}"
+    fi
+} > "${PROFILE_DIR}/profile_config.env"
+
+echo "profiles written to ${PROFILE_DIR}"
+echo "persistent HIP binary: ${HIP_BINARY}"

@@ -43,7 +43,7 @@ https://datawhalechina.github.io/hello-gpu/
 | [第 5 章 用 rocprof 找到慢在哪里](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part1-profiling/chapter5/index.md) | 对照两个 vector add，只看 kernel 时间、工作划分和 stride 趋势 | 🚧 |
 | [第 6 章 读懂 Roofline 图](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part1-profiling/chapter6/index.md) | 看懂参考线、生成工作点并选择排查方向 | 🚧 |
 | **第 2 篇：算子优化 + 刷题** | | |
-| [第 7 章 Reduction：从 naive 到 wavefront](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part2-kernels/chapter7/index.md) | 跨线程归约、LDS 协作、多阶段、HIP/Triton 对比 | 🚧 |
+| [第 7 章 Reduction：从全局争用到分层归约](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part2-kernels/chapter7/index.md) | 从 baseline 出发，用 profiling 与单变量实验逐轮优化 HIP 和 Triton Reduction | 🚧 |
 | [第 8 章 Softmax：数值稳定 + 融合](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part2-kernels/chapter8/index.md) | 减最大值、block 并行、减少写回、HIP/Triton 对比 | 🚧 |
 | [第 9 章 GEMM：tiling + LDS](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part2-kernels/chapter9/index.md) | 分块复用、寄存器 blocking、不追 rocBLAS、HIP/Triton 对比 | 🚧 |
 | [第 10 章 Flash Attention 思路](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part2-kernels/chapter10/index.md) | 分块 + 在线 softmax、不物化中间矩阵（算子篇压轴） | 🚧 |
