@@ -123,18 +123,20 @@ export const parts = [
     readmeTitle: '第 2 篇：算子优化 + 刷题',
     chapters: [
       {
-        title: 'Reduction：从 naive 到 wavefront',
-        summary: '跨线程归约、LDS 协作、多阶段、HIP/Triton 对比',
+        title: 'Reduction：从全局争用到分层归约',
+        summary: '从 baseline 出发，用 profiling 与单变量实验逐轮优化 HIP 和 Triton Reduction',
         status: '🚧',
-        lead: '本章进入第一个真正体现 GPU 层级协作的算子：Reduction。读完后，你应该能理解为什么跨线程汇总需要 LDS、同步和多阶段设计，并能用 HIP 和 Triton 各写一版做对比。',
+        lead: '本章不直接罗列优化技巧，而是从能算对的 baseline 出发，重复「测量、分析、提出假设、只改一个机制、重新验证」的过程。HIP 完整走完五轮后，再用同一方法分析 Triton。',
         sections: [
-          ['Reduction 为什么重要', '说明求和、归约、归一化、注意力中为什么经常出现 reduction。'],
-          ['Naive Reduction', '从简单但低效的实现开始，用 profiling 观察瓶颈。'],
-          ['Shared Memory / LDS 优化', '使用 LDS 减少全局内存访问并组织 block 内归约。'],
-          ['Wavefront 级优化', '理解 wavefront 内协作和分支收敛对 reduction 的影响。'],
-          ['多阶段 Reduction', '把大规模输入拆成 block 内归约和跨 block 合并。'],
-          ['Triton 版本对比', '用 Triton 写一版 reduction，从代码复杂度和性能两方面对比 HIP。'],
-          ['性能对比与思考题', '用 benchmark 和 profiling 对比不同版本，分析输入长度和 block size 的影响。']
+          ['固定问题、正确性与测量口径', '先固定输入、误差标准、计时范围和每轮重复使用的优化闭环。'],
+          ['HIP baseline：逐元素 atomic', '从最短的正确实现开始，用 benchmark、kernel trace 与 Roofline 建立第一份证据。'],
+          ['HIP 第 1 轮：LDS 组内归约', '验证减少同地址 atomic 次数是否改善当前配置。'],
+          ['HIP 第 2 轮：寄存器局部累加', '保持 LDS 树不变，只调整线程覆盖输入的方式。'],
+          ['HIP 第 3 轮：wave shuffle', '保持 grid 与局部累加不变，只替换组内归约机制。'],
+          ['HIP 第 4 轮：多阶段 partial', '把跨 block atomic 改成独立 partial，并测量全部 kernel。'],
+          ['Triton baseline 与多阶段归约', '从 program partial + atomic 出发，独立验证 multistage 假设。'],
+          ['HIP 与 Triton 对照', '按局部和、组内归约和跨组合并建立迁移关系。'],
+          ['复跑与练习', '用统一脚本覆盖边界输入，并通过结构计数和实验设计检验理解。']
         ]
       },
       {
