@@ -1,41 +1,41 @@
 ---
-title: "第17章 小模型 LLM 解码 + Agent 自动优化"
-description: "Hello GPU 第17章 · Qwen 0.5B/1.8B 量化、decode 算子视角、Agent 优化 KV cache/精度"
+title: "第17章 YOLO 部署 + Agent 自动优化"
+description: "Hello GPU 第17章 · ONNX/MIGraphX 部署、Agent profiling 找瓶颈、改配置/算子、对比"
 ---
 
-# 第17章 小模型 LLM 解码 + Agent 自动优化
+# 第17章 YOLO 部署 + Agent 自动优化
 
 ## 本章导读
 
-> 本章把 Agent 应用到 LLM 解码场景。受 9070XT 16GB 显存限制，只能量化小模型（Qwen 0.5B/1.8B）。重点是 decode 阶段的算子视角：Agent 如何优化 KV cache 访问、精度选择等。注意：PagedAttention、多卡 TP 等留给 hello-mlsys。
+> 本章把 Agent 的优化对象从单个教学算子升级为真实模型——YOLO。先快速部署 YOLO，再让 Agent 对它跑 profiling、识别瓶颈、给配置建议（batch/精度/算子融合）、改配置跑对比。注意：Agent 能改配置和换算子，但不能自动写新算子集成进 ONNX——这个边界在章首点明。
 
-## 17.1 显存约束下的模型选型
+## 17.1 Agent 能力边界：算子层 vs 模型层
 
-说明 9070XT 16GB 显存为什么选 Qwen 0.5B/1.8B 量化，跑不了 7B+。
+明确本章 Agent 在模型层能做什么（profiling、改配置、换算子、出报告）、不能做什么（自动写新算子集成进 ONNX/MIGraphX）。
 
-## 17.2 LLM 推理流程拆解
+## 17.2 YOLO 模型部署
 
-拆解 prefill 和 decode 两个阶段，理解 decode 为什么是算子密集型。
+准备 YOLOv8 模型，导出 ONNX，用 MIGraphX 或 ONNX Runtime-ROCm 跑通推理。
 
-## 17.3 建立 decode baseline
+## 17.3 建立推理 baseline
 
-测量 TTFT、TPOT、KV cache 显存占用作为 baseline。
+用第 4 章的 benchmark 习惯记录端到端延迟、吞吐和硬件上下文。
 
-## 17.4 decode 的算子视角
+## 17.4 Agent 跑推理 profiling
 
-把 decode 拆成 attention（KV cache 读取）+ matmul（投影）两个核心算子。
+让 Agent 自动 profiling，识别瓶颈在预处理、NMS、还是模型 kernel。
 
-## 17.5 Agent 优化 KV cache 访问
+## 17.5 Agent 给配置优化建议
 
-让 Agent 分析 KV cache 的访存模式，给出精度/布局优化建议。
+让 Agent 根据 profiling 信号给出 batch size、精度、算子融合等配置建议。
 
-## 17.6 Agent 优化精度选择
+## 17.6 改配置跑对比
 
-让 Agent 对比 fp16/int8/int4 在 decode 性能和显存上的权衡。
+让 Agent 自动改配置、重跑 benchmark、对比优化前后性能。
 
-## 17.7 单卡边界与下一步
+## 17.7 输出优化报告
 
-明确 PagedAttention、多卡 TP、并发调度等留给 hello-mlsys。
+形成一份包含瓶颈判断、优化尝试、对比数据的 YOLO 优化报告。
 
 ## 本章小结
 

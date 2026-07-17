@@ -119,82 +119,114 @@ export const parts = [
   {
     prefix: '/part2-kernels/',
     navText: '算子优化',
-    title: '算子优化 + 刷题',
-    readmeTitle: '第 2 篇：算子优化 + 刷题',
+    title: '经典算子与 Kernel 实战',
+    readmeTitle: '第 2 篇：经典算子与 Kernel 实战',
     chapters: [
       {
-        title: 'Reduction：从全局争用到分层归约',
-        summary: '从 baseline 出发，用 profiling 与单变量实验逐轮优化 HIP 和 Triton Reduction',
+        title: 'Element-Wise：逐元素算子',
+        summary: '以 Vector Add 为例，分别用 HIP 深入理解访存，用 Triton 快速掌握 tile 编程',
         status: '🚧',
-        lead: '本章不直接罗列优化技巧，而是从能算对的 baseline 出发，重复「测量、分析、提出假设、只改一个机制、重新验证」的过程。HIP 完整走完五轮后，再用同一方法分析 Triton。',
+        lead: '本章从最容易看懂的 Vector Add 开始，先认识“逐元素”到底是什么意思，再把同一个问题拆成两条可以独立选择的路线：HIP 篇带你看清线程、地址和显存访问，Triton 篇带你用较少代码表达一整块数据。两条路线最后回到同一组正确性与性能问题，让你知道工具不同，判断方法为什么仍然相通。',
         sections: [
-          ['固定问题、正确性与测量口径', '先固定输入、误差标准、计时范围和每轮重复使用的优化闭环。'],
-          ['HIP baseline：逐元素 atomic', '从最短的正确实现开始，用 benchmark、kernel trace 与 Roofline 建立第一份证据。'],
-          ['HIP 第 1 轮：LDS 组内归约', '验证减少同地址 atomic 次数是否改善当前配置。'],
-          ['HIP 第 2 轮：寄存器局部累加', '保持 LDS 树不变，只调整线程覆盖输入的方式。'],
-          ['HIP 第 3 轮：wave shuffle', '保持 grid 与局部累加不变，只替换组内归约机制。'],
-          ['HIP 第 4 轮：多阶段 partial', '把跨 block atomic 改成独立 partial，并测量全部 kernel。'],
-          ['Triton baseline 与多阶段归约', '从 program partial + atomic 出发，独立验证 multistage 假设。'],
-          ['HIP 与 Triton 对照', '按局部和、组内归约和跨组合并建立迁移关系。'],
-          ['复跑与练习', '用统一脚本覆盖边界输入，并通过结构计数和实验设计检验理解。']
+          ['先认识 Element-Wise', '从输出元素依赖关系出发，认识 Add、ReLU、Scale & Bias 等逐元素算子的共同结构。'],
+          ['用 Vector Add 固定问题', '用手算、PyTorch 参考与输入边界建立同一份正确性标准。'],
+          ['一次加法要搬多少数据', '数清一次加法背后的两次读取和一次写回，提出带宽受限假设。'],
+          ['HIP 篇：看清线程与显存', '从一线程一元素出发，依次观察连续访存、Grid-Stride Loop、向量化与尾部处理。'],
+          ['Triton 篇：用 Tile 快速表达', '从最小模板出发，理解 program、offset、mask、load/store，并用 Triton-Viz 查看数据访问。'],
+          ['HIP 与 Triton 怎样对应', '把 thread 与 program、标量索引与 tile offsets、边界判断与 mask 放在同一张表中。'],
+          ['复跑与练习', '统一运行正确性检查，尝试非整除长度、不同 block size 与简单逐元素变体。']
         ]
       },
       {
-        title: 'Softmax：数值稳定 + 融合',
-        summary: '减最大值、block 并行、减少写回、HIP/Triton 对比',
+        title: 'Reduction：归约算子',
+        summary: '以 Sum Reduction 为例，学习跨线程协作、LDS 与 Wave Shuffle',
         status: '🚧',
-        lead: '本章用 Softmax 把 reduction、数值稳定性和访存优化串起来。读完后，你应该能写出一个结果正确、能被 benchmark 和 profiling 验证的教学版 Softmax。',
+        lead: '本章撤掉 Element-Wise 中“每个输出彼此独立”的前提：很多输入要共同得到一个结果。公共部分先把串行求和画成并行树；HIP 篇深入 LDS、同步与 Wave Shuffle，Triton 篇用 program partial 和多阶段归约快速表达同一层次。',
         sections: [
-          ['Softmax 在 Transformer 中的位置', '说明为什么 Softmax 是理解注意力性能的重要入口。'],
-          ['Naive Softmax', '从直接实现开始，观察重复访存和数值问题。'],
-          ['数值稳定性', '使用减去最大值的形式避免指数溢出。'],
-          ['访存优化与融合', '减少多次读取和写回，理解中间结果如何组织。'],
-          ['Block 级并行', '用 block 内协作处理一行或一段数据。'],
-          ['Triton 版本对比', '用 Triton 写一版 softmax，对比 HIP 实现的复杂度和瓶颈。'],
-          ['与 PyTorch 结果对齐', '确认数值误差、输入范围和边界条件。']
+          ['什么是归约算子', '从多输入到少输出的数据依赖出发，区分 sum、max 与 argmax。'],
+          ['从串行求和到并行树', '手算一个小数组，对比线性依赖与树形依赖。'],
+          ['固定正确性与测量口径', '明确浮点误差、非二次幂长度和完整多阶段计时。'],
+          ['HIP v0：逐元素 atomic baseline', '用全局同地址争用建立最短的正确起点。'],
+          ['HIP v1：LDS block 内归约', '协作加载、同步并逐轮收缩活动线程。'],
+          ['HIP v2：寄存器局部累加', '先让每个线程得到局部和，再进入 LDS。'],
+          ['HIP v3/v4：Wave Shuffle 与多阶段 partial', '减少同步，并把跨 block 合并拆成独立阶段。'],
+          ['Triton t0：program partial', '说明一个 program 怎样覆盖一段输入并使用 tl.sum。'],
+          ['Triton t1：多阶段归约', '用 partial buffer 与第二次 dispatch 完成跨 program 合并。'],
+          ['HIP 与 Triton 的归约层次对照', '对齐局部和、组内归约与跨组合并。'],
+          ['复跑与练习', '覆盖 max、非二次幂、累加 dtype 与负结果分析。']
         ]
       },
       {
-        title: 'GEMM：tiling + LDS',
-        summary: '分块复用、寄存器 blocking、不追 rocBLAS、HIP/Triton 对比',
+        title: 'Normalization：归一化算子',
+        summary: '以行级 Softmax 为例，学习数值稳定与逐元素/归约融合',
         status: '🚧',
-        lead: '本章用教学版 GEMM 理解矩阵乘为什么是 AI 计算的核心。目标不是追平 rocBLAS，而是通过 tiling、LDS 和寄存器复用看懂高性能 GEMM 的基本方向。注意 9070XT 是 RDNA4，靠 WMMA 而非 MFMA。',
+        lead: '本章把 Element-Wise 与 Reduction 组合起来：Softmax 既要逐元素取指数，又要两次归约。公共部分先用大数反例理解“减最大值”；HIP 篇观察中间写回与数据驻留，Triton 篇学习一行对应一个 program 的融合表达。',
         sections: [
-          ['GEMM 为什么是核心算子', '说明矩阵乘在神经网络和注意力计算中的地位。'],
-          ['Naive Matmul', '写出最直接的一线程计算一个输出元素的实现。'],
-          ['Tiling', '把矩阵拆块，理解数据复用的第一步。'],
-          ['LDS 缓存', '用 LDS 缓存 tile，减少全局内存重复读取。'],
-          ['Register Blocking', '观察每个线程计算多个输出时的寄存器复用。'],
-          ['Triton 版本对比', '用 Triton 写一版 GEMM，对比 tiling 表达的简洁性。'],
-          ['与 rocBLAS 对比（只看差距方向）', '只观察差距和方向，不承诺达到库级性能。']
+          ['归一化算子解决什么问题', '从 logits 到概率，先固定逐行 Softmax 语义。'],
+          ['为什么直接指数会溢出', '用小例子推导减最大值，而不是只给公式。'],
+          ['Softmax 由哪些基本模式组成', '拆成 max reduction、element-wise exp、sum reduction 与 normalize。'],
+          ['HIP v0：稳定的多 kernel baseline', '先保证数值正确，并统计完整路径。'],
+          ['HIP v1/v2：融合 dispatch 与寄存器驻留', '区分少一次 launch 与少一次全局写回。'],
+          ['HIP v3：Wave32 收尾', '保持数据映射不变，只替换 block 内归约机制。'],
+          ['Triton t0：一行对应一个 program', '讲清 mask、next power of 2 与行内 reduction。'],
+          ['Triton t1：block size 与 num warps', '只做受控参数实验，并允许参数变大反而变慢。'],
+          ['HIP 与 Triton 的融合边界', '比较显式寄存器/LDS 控制与编译器生成映射。'],
+          ['稳定性压力测试与练习', '覆盖大正值、大负值、尾行、长行和不同 dtype。']
         ]
       },
       {
-        title: 'Flash Attention 思路',
-        summary: '分块 + 在线 softmax、不物化中间矩阵（算子篇压轴）',
+        title: 'GEMM-Like：矩阵乘类算子',
+        summary: '以 Matmul 为例，学习分块、数据复用与寄存器累加',
         status: '🚧',
-        lead: '本章是算子篇的压轴，把前面 Reduction、Softmax、GEMM 的思路综合起来，理解 FlashAttention 为什么能大幅减少显存访问。重点是「思路」而非追平官方实现。',
+        lead: '本章第一次让同一份输入被多个输出反复使用。公共部分从点积和小矩阵开始画 tile；HIP 篇显式管理 LDS 与线程 fragment，Triton 篇用 program/tile 表达同一复用，并把 autotune 限制为可解释的受控实验。',
         sections: [
-          ['Attention 计算流程', '拆解 QK^T、Softmax、PV 三个阶段，理解为什么朴素实现慢。'],
-          ['朴素 Attention 的显存瓶颈', '用 profiling 观察中间矩阵 S=QK^T、P=softmax(S) 物化带来的显存压力。'],
-          ['分块计算（Tiling）', '把 Q、K、V 分块，理解为什么分块能减少全局访存。'],
-          ['在线 Softmax（Online Softmax）', '理解为什么可以一边算一边归一化，不需要先算完整行。'],
-          ['不物化中间矩阵', '把分块 + 在线 softmax 结合，避免写出 S、P 两个大矩阵。'],
-          ['本章小结：算子篇的方法论回顾', '回顾 Reduction/Softmax/GEMM/Attention 共同的优化主线：减少访存、提升数据复用。']
+          ['从点积看矩阵乘', '用小矩阵说明输出元素、M/N/K 与 row-major 地址。'],
+          ['为什么朴素实现重复读取', '区分算法级计算强度、源码请求字节和物理流量。'],
+          ['Tile 为什么能带来复用', '先画块级数据生命周期，再进入代码。'],
+          ['HIP v0：一线程一输出', '建立最短的正确点积 baseline。'],
+          ['HIP v1：LDS 分块', '协作加载 A/B tile，处理同步、尾块与 bank 风险。'],
+          ['HIP v2/v3：一维与二维寄存器分块', '让一个线程计算多个输出，同时跟踪 VGPR 压力。'],
+          ['HIP 进阶实验', '只选择一项已实测的 K tile、双缓冲或 WMMA 机制。'],
+          ['Triton t0：用 tl.dot 写 tiled Matmul', '解释 program id、M/N tile 与 K 循环。'],
+          ['Triton t1：program 排序与受控 autotune', '限制搜索空间，并把选型结果落盘。'],
+          ['HIP 与 Triton 的分块层次对照', '比较 block/thread fragment 与 program/tile。'],
+          ['复跑与练习', '覆盖非方阵、非整除形状、转置布局与参数反例。']
         ]
       },
       {
-        title: '怎么刷 LeetGPU',
-        summary: '平台题型/评分、本地评测器、调试策略、性能闭环（硬件无关方法论）',
+        title: 'Fusion：融合算子',
+        summary: '以 FlashAttention 为例，学习在线计算、减少中间写回与 IO-aware',
         status: '🚧',
-        lead: '本章把前面四个算子积累的经验系统化成「刷题方法论」。重要前提：LeetGPU 目前仅支持 CUDA/Triton/PyTorch，不在 AMD 上提交；但刷题的方法论是硬件无关的——怎么读题、怎么搭本地评测、怎么用 profiling 驱动迭代，这些在哪个平台都通用。',
+        lead: '本章把前四章的模式组合起来：矩阵乘产生 Scores，Softmax 做归一化，再与 V 相乘。公共部分先比较物化与在线数据流；HIP/Triton 两篇分别实现教学版前向 FlashAttention，并用完整路径验证减少中间写回的价值。',
         sections: [
-          ['GPU 算子题库长什么样', '介绍 LeetGPU / Tensara / GPU MODE 等平台的题目结构和评分机制（读题层，不依赖提交）。'],
-          ['题型套路分类', '把题目分成 elementwise / reduction / GEMM-like / 融合型，对应本书 Ch4 / Ch7 / Ch9 / Ch10。'],
-          ['本地评测器怎么搭', '复用 gpu-queue 思路，搭一个喂输入、跑 kernel、计时、对答案的本地评测器（跑在 9070XT 上）。'],
-          ['刷题策略：正确性 → 带宽 → 计算强度', '说明每一步该用什么 profiling 工具验证，避免一上来就盲目优化。'],
-          ['调试常见问题', '列出边界条件、数值误差、bank 冲突、occupancy 不足等常见坑。'],
-          ['关于 AMD 平台的现状', '诚实说明 LeetGPU 当前是 CUDA-only；等 AMD 等价平台出现，本章方法论迁移成本很低。']
+          ['从普通 Attention 数据流开始', '只补本章需要的 Q/K/V、Scores、Softmax 与输出。'],
+          ['物化中间矩阵的代价', '画出三段 kernel 与 Scores/P 的全局读写路径。'],
+          ['在线 Softmax 怎样保持精确', '手算 running max、normalizer、历史重缩放与输出累加。'],
+          ['固定语义、边界与测量口径', '明确 FP16 输入、FP32 累加、causal、尾块和完整时间。'],
+          ['HIP h0/h1：从物化基线到在线融合', '先消除完整中间矩阵，再验证正确性。'],
+          ['HIP h2–h4：Wave、query/key 分块与 K/V 复用', '每轮只改变一个机制并跟踪资源代价。'],
+          ['Triton t0：物化基线', '保持与 HIP 相同的数学语义与计时边界。'],
+          ['Triton t1–t3：在线 query/key tile', '解释块级状态、mask 与寄存器/scratch 风险。'],
+          ['完整证据与实现边界', '汇总时间、分配字节、dispatch、正确性与资源字段。'],
+          ['从组合到融合的方法总结', '回收 Element-Wise、Reduction、Normalization 与 GEMM-Like。']
+        ]
+      },
+      {
+        title: 'Kernel 实战：LeetGPU',
+        summary: '读题、分类、本地评测、提交、调试与性能迭代',
+        status: '🚧',
+        lead: '本章把前面五类算子积累的经验变成一套真正可执行的刷题流程：读懂接口与约束、判断题型、先写正确版本、用本地评测器覆盖边界、再到平台运行和提交。平台托管成绩与本书 9070XT 本地实验分开记录，但读题、验证和迭代的方法可以相互迁移。',
+        sections: [
+          ['LeetGPU 题目与当前平台边界', '写作时重新核对官方支持语言、评分和提交环境，并把平台托管结果与 9070XT 本地实验分开。'],
+          ['一道 Kernel 题由什么组成', '读清函数签名、输入约束、正确性、性能 shape 和评分口径。'],
+          ['先把题目归类', '映射到 Element-Wise、Reduction、Normalization、GEMM-Like 或 Fusion，再选择熟悉的模式。'],
+          ['建立参考实现与本地评测器', '先喂输入、对答案、覆盖边界，再在 9070XT 上做独立计时。'],
+          ['把第 7 章 Triton 模板改成提交模板', '复用 kernel、grid、mask 与测试骨架，不在本章第一次教授 Triton。'],
+          ['完整走一题：从正确到可优化', '展示读题、t0、失败样例、性能假设、t1 和复测全过程。'],
+          ['怎么读 benchmark 与排行榜', '区分平台噪声、隐藏 shape、单点特化和可泛化实现。'],
+          ['常见错误与调试顺序', '按越界、mask、布局、dtype、数值误差、编译失败和超时的顺序排查。'],
+          ['一条循序渐进的刷题路线', '按第 7–11 章的依赖顺序安排题型，不承诺具体排名或 AC。'],
+          ['从 LeetGPU 带回 9070XT', '说明哪些方法可以迁移，哪些平台成绩不能当作 AMD 实测数据。']
         ]
       }
     ]

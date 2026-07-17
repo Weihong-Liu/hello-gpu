@@ -1,37 +1,37 @@
 ---
-title: "第13章 工具封装"
-description: "Hello GPU 第13章 · benchmark/profiling/编译包成 Agent 可调用工具"
+title: "第13章 Agent 入门"
+description: "Hello GPU 第13章 · 参考 hello-agents、LLM Agent 基本范式、工具调用"
 ---
 
-# 第13章 工具封装
+# 第13章 Agent 入门
 
 ## 本章导读
 
-> 本章把 Part 1 学过的 benchmark、rocprof 以及编译流程，封装成 Agent 能调用的标准化工具。这是让 Agent「能动手」的前提——没有工具的 Agent 只会空谈。
+> 本章是 Agent 篇的入口，参考 hello-agents 的概念铺垫节奏，讲清楚 LLM Agent 的基本范式。但本书的 Agent 场景是「算子/模型优化」，不是通用智能体——这是和 hello-agents 的关键区别。
 
-## 13.1 为什么要封装工具
+## 13.1 什么是 LLM Agent
 
-说明 Agent 不能直接操作 shell，需要结构化、可解析的工具接口。
+用最简模型理解 Agent = LLM + 工具 + 循环，参考 hello-agents 第 1 章。
 
-## 13.2 封装 benchmark 工具
+## 13.2 为什么 Agent 适合算子优化
 
-把 Part 1 的计时脚本包成输入 kernel → 输出延迟/带宽的标准化工具。
+说明算子优化天然适合 Agent：有明确目标（性能）、有可调用工具（编译/跑分/profiling）、有可验证反馈（benchmark 数字）。
 
-## 13.3 封装 profiling 工具
+## 13.3 ReAct 范式简介
 
-把 rocprof 包成输入 kernel → 输出瓶颈信号的标准化工具。
+理解 Reason-Act-Observe 循环，这是后续算子优化 Agent 的基本骨架。
 
-## 13.4 封装编译工具
+## 13.4 工具调用（Tool Use）
 
-把 hipcc/triton 编译流程包成输入代码 → 输出编译成功/失败的标准化工具。
+理解 Agent 如何通过结构化接口调用外部工具。
 
-## 13.5 工具的输入输出 schema
+## 13.5 本书 Agent 的边界
 
-用 JSON schema 定义每个工具的接口，让 Agent 能正确调用。
+明确本书 Agent 聚焦算子/模型优化，不做通用代码生成或对话助手。
 
-## 13.6 错误处理与重试
+## 13.6 和 hello-agents 的关系
 
-说明工具失败时如何把错误信息回传给 Agent 触发反思。
+说明本书 Agent 篇假设你已了解 Agent 基本概念；零基础建议先读 hello-agents。
 
 ## 本章小结
 

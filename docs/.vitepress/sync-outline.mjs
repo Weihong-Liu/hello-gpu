@@ -57,7 +57,7 @@ function syncChapterMetadata(existing, chapter) {
     next = next.replace(/^(---\n[\s\S]*?\n---\n)/, `$1\n# 第${chapter.number}章 ${chapter.title}\n`)
   }
 
-  next = next.replace(/^## \d+\.(\d+) /gm, `## ${chapter.number}.$1 `)
+  next = next.replace(/^(#{2,4}) \d+((?:\.\d+)+) /gm, `$1 ${chapter.number}$2 `)
 
   return next
 }

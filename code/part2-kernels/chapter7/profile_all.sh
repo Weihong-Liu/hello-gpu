@@ -6,13 +6,19 @@ PART_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 LOG_DIR="${SCRIPT_DIR}/logs"
 PROFILE_DIR="${SCRIPT_DIR}/profiles"
 GPU_ARCH="${GPU_ARCH:-gfx1201}"
-SIZE="${SIZE:-1048576}"
+SIZE="${SIZE:-16777216}"
 HIP_BLOCK="${HIP_BLOCK:-256}"
 TRITON_BLOCK="${TRITON_BLOCK:-1024}"
 PROFILE_WARMUP="${PROFILE_WARMUP:-0}"
 PROFILE_REPEAT="${PROFILE_REPEAT:-10}"
-SEED="${SEED:-20260711}"
-HIP_BINARY="${SCRIPT_DIR}/reduction_hip"
+SEED="${SEED:-20260716}"
+BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hello-gpu-ch7-profile.XXXXXX")"
+HIP_BINARY="${BUILD_DIR}/vector_add_hip"
+
+cleanup() {
+    rm -rf "${BUILD_DIR}"
+}
+trap cleanup EXIT
 
 mkdir -p "${LOG_DIR}" "${PROFILE_DIR}"
 
@@ -31,14 +37,13 @@ hipcc \
     --offload-arch="${GPU_ARCH}" \
     -O3 \
     -std=c++17 \
-    "${SCRIPT_DIR}/reduction_hip.hip" \
+    "${SCRIPT_DIR}/vector_add_hip.hip" \
     -o "${HIP_BINARY}" \
     2>&1 | tee "${LOG_DIR}/profile_hip_compile.log"
 
 profile_command() {
     local label="$1"
     shift
-
     echo "profiling ${label}"
     rocprofv3 \
         --kernel-trace \
@@ -49,7 +54,7 @@ profile_command() {
         2>&1 | tee "${LOG_DIR}/profile_${label}.log"
 }
 
-for version in v0 v1 v2 v3 v4; do
+for version in v0 v1-contiguous v1-strided v2 v3; do
     hip_args=(
         --version "${version}"
         --size "${SIZE}"
@@ -64,9 +69,9 @@ for version in v0 v1 v2 v3 v4; do
     profile_command "hip-${version}" "${HIP_BINARY}" "${hip_args[@]}"
 done
 
-# Populate Triton's disk cache and fail early on correctness before starting
-# separate profiler processes.
-python "${SCRIPT_DIR}/reduction_triton.py" \
+# Populate Triton's compilation cache and fail early on correctness before
+# starting one profiler process per version.
+python "${SCRIPT_DIR}/vector_add_triton.py" \
     --version all \
     --size "${SIZE}" \
     --block "${TRITON_BLOCK}" \
@@ -75,9 +80,9 @@ python "${SCRIPT_DIR}/reduction_triton.py" \
     --seed "${SEED}" \
     2>&1 | tee "${LOG_DIR}/profile_triton_precheck.log"
 
-for version in atomic multistage; do
+for version in t0 t1; do
     profile_command "triton-${version}" \
-        python "${SCRIPT_DIR}/reduction_triton.py" \
+        python "${SCRIPT_DIR}/vector_add_triton.py" \
         --version "${version}" \
         --size "${SIZE}" \
         --block "${TRITON_BLOCK}" \
@@ -100,4 +105,3 @@ done
 } > "${PROFILE_DIR}/profile_config.env"
 
 echo "profiles written to ${PROFILE_DIR}"
-echo "persistent HIP binary: ${HIP_BINARY}"

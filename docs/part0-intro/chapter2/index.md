@@ -308,9 +308,9 @@ flowchart TD
 - **Padding（加一列）**：让每行多一个 dword（如 `As[BLOCK_K + 1]`），破坏 stride 32 的对齐；最简单，代价是浪费一点 LDS 容量；
 - **XOR Swizzle**：对地址做 XOR 变换，让物理 bank 编号被打散；这是 Composable Kernel / rocWMMA 在生产代码里更常用的方案。
 
-[第 9 章 GEMM](../../part2-kernels/chapter9/index.md) 会用真实 kernel 把 padding 跑出来对比。
+[第 10 章 GEMM](../../part2-kernels/chapter10/index.md) 会先用真实 kernel 验证 LDS 分块与寄存器复用；padding 是否有效仍要作为独立变量另做对照，不能从 tile 形状直接下结论。
 
-> **怎么发现自己撞了 bank 冲突**：不要靠猜。先用 `rocprofv3 -L` 确认当前硬件是否提供可用的 LDS 相关计数器；再构造只改变 LDS 访问方式的对照实验。第 5 章会先练习怎样检查一个对照是否同时改了多个变量，真正的 LDS 对照放到 [第 9 章 GEMM](../../part2-kernels/chapter9/index.md)。
+> **怎么发现自己撞了 bank 冲突**：不要靠猜。先确认当前硬件是否提供可用的 LDS 相关计数器，再构造只改变 LDS 访问方式的对照实验。第 5 章会先练习怎样检查一个对照是否同时改了多个变量；[第 10 章 GEMM](../../part2-kernels/chapter10/index.md) 则先验证能由源码、时间和 kernel trace 共同支撑的分块复用。
 
 ## 2.8 全局内存合并访存（Coalescing）
 
@@ -357,7 +357,7 @@ flowchart TD
 2. **fp16 / bf16 的算子尽量做向量化 load**：AMD 上常见的 `global_load_dwordx4` 一条指令一个 lane 加载 16 字节，整个 wave 合起来 512 字节——比 4 条 dword 指令少一个数量级的发射开销；
 3. **遇到 transpose / strided slice，把转置或 gather 单独做成一个 kernel**，不要塞进主算子里。
 
-[第 3 章](../chapter3/index.md) 的 vector add 是连续线程读连续地址的典型；[第 5 章](../../part1-profiling/chapter5/index.md) 会用两个配置练习 profiler，并检查对照实验是否足够公平；[第 7 章 Reduction](../../part2-kernels/chapter7/index.md) 和 [第 9 章 GEMM](../../part2-kernels/chapter9/index.md) 会继续应用这些检查方法。
+[第 3 章](../chapter3/index.md) 的 vector add 是连续线程读连续地址的典型；[第 5 章](../../part1-profiling/chapter5/index.md) 会用两个配置练习 profiler，并检查对照实验是否足够公平；[第 8 章 Reduction](../../part2-kernels/chapter8/index.md) 和 [第 10 章 GEMM](../../part2-kernels/chapter10/index.md) 会继续应用这些检查方法。
 
 ## 2.9 WMMA：RDNA4 的矩阵加速单元
 
@@ -400,7 +400,7 @@ flowchart TD
 
 实操含义：
 
-- 在 9070XT（RDNA4）上写矩阵相关 kernel，**优先确认 WMMA 路径**：要么用 rocWMMA 帮你封好，要么直接调 `__builtin_amdgcn_wmma_*` 内置函数。第 2 篇的 [GEMM](../../part2-kernels/chapter9/index.md) 会做对比实验。
+- 在 9070XT（RDNA4）上写矩阵相关 kernel，**优先确认 WMMA 路径**：要么用 rocWMMA 帮你封好，要么直接调 `__builtin_amdgcn_wmma_*` 内置函数。第 2 篇的 [GEMM](../../part2-kernels/chapter10/index.md) 会做对比实验。
 - WMMA 的 tile 形状决定了 BLOCK_M / BLOCK_N / BLOCK_K 的最佳取值。第 2 篇的 Triton 章节会把这点反复用到。
 
 ## 2.10 Roofline 的硬件来源

@@ -11,6 +11,7 @@ dependencies = [
     "rocm-sdk-libraries-gfx120x-all==7.13.0",
     "torch==2.11.0+rocm7.13.0",
     "triton==3.6.0+rocm7.13.0",
+    "triton-viz==3.0",
 ]
 
 [[tool.uv.index]]

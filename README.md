@@ -29,7 +29,7 @@ https://datawhalechina.github.io/hello-gpu/
 
 ## 目录
 
-> 前言 + 4 篇正文，共 18 章。显示章号由 `docs/.vitepress/outline.mjs` 自动生成，新增章节后运行 `npm run docs:sync-outline` 即可同步 README 与站点导航。
+> 前言 + 4 篇正文，共 19 章。显示章号由 `docs/.vitepress/outline.mjs` 自动生成，新增章节后运行 `npm run docs:sync-outline` 即可同步 README 与站点导航。
 
 | 章节名 | 简介 | 状态 |
 | ---- | ---- | ---- |
@@ -42,20 +42,21 @@ https://datawhalechina.github.io/hello-gpu/
 | [第 4 章 benchmark 与可信计时](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part1-profiling/chapter4/index.md) | 热身、重复、GPU event、避免测量陷阱 | 🚧 |
 | [第 5 章 用 rocprof 找到慢在哪里](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part1-profiling/chapter5/index.md) | 对照两个 vector add，只看 kernel 时间、工作划分和 stride 趋势 | 🚧 |
 | [第 6 章 读懂 Roofline 图](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part1-profiling/chapter6/index.md) | 看懂参考线、生成工作点并选择排查方向 | 🚧 |
-| **第 2 篇：算子优化 + 刷题** | | |
-| [第 7 章 Reduction：从全局争用到分层归约](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part2-kernels/chapter7/index.md) | 从 baseline 出发，用 profiling 与单变量实验逐轮优化 HIP 和 Triton Reduction | 🚧 |
-| [第 8 章 Softmax：数值稳定 + 融合](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part2-kernels/chapter8/index.md) | 减最大值、block 并行、减少写回、HIP/Triton 对比 | 🚧 |
-| [第 9 章 GEMM：tiling + LDS](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part2-kernels/chapter9/index.md) | 分块复用、寄存器 blocking、不追 rocBLAS、HIP/Triton 对比 | 🚧 |
-| [第 10 章 Flash Attention 思路](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part2-kernels/chapter10/index.md) | 分块 + 在线 softmax、不物化中间矩阵（算子篇压轴） | 🚧 |
-| [第 11 章 怎么刷 LeetGPU](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part2-kernels/chapter11/index.md) | 平台题型/评分、本地评测器、调试策略、性能闭环（硬件无关方法论） | 🚧 |
+| **第 2 篇：经典算子与 Kernel 实战** | | |
+| [第 7 章 Element-Wise：逐元素算子](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part2-kernels/chapter7/index.md) | 以 Vector Add 为例，分别用 HIP 深入理解访存，用 Triton 快速掌握 tile 编程 | 🚧 |
+| [第 8 章 Reduction：归约算子](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part2-kernels/chapter8/index.md) | 以 Sum Reduction 为例，学习跨线程协作、LDS 与 Wave Shuffle | 🚧 |
+| [第 9 章 Normalization：归一化算子](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part2-kernels/chapter9/index.md) | 以行级 Softmax 为例，学习数值稳定与逐元素/归约融合 | 🚧 |
+| [第 10 章 GEMM-Like：矩阵乘类算子](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part2-kernels/chapter10/index.md) | 以 Matmul 为例，学习分块、数据复用与寄存器累加 | 🚧 |
+| [第 11 章 Fusion：融合算子](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part2-kernels/chapter11/index.md) | 以 FlashAttention 为例，学习在线计算、减少中间写回与 IO-aware | 🚧 |
+| [第 12 章 Kernel 实战：LeetGPU](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part2-kernels/chapter12/index.md) | 读题、分类、本地评测、提交、调试与性能迭代 | 🚧 |
 | **第 3 篇：Agent（算子层）** | | |
-| [第 12 章 Agent 入门](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part3-agent/chapter12/index.md) | 参考 hello-agents、LLM Agent 基本范式、工具调用 | 🚧 |
-| [第 13 章 工具封装](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part3-agent/chapter13/index.md) | benchmark/profiling/编译包成 Agent 可调用工具 | 🚧 |
-| [第 14 章 算子优化 Agent 设计](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part3-agent/chapter14/index.md) | 读题→生成 kernel→跑分→反思迭代 | 🚧 |
-| [第 15 章 多轮优化实战](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part3-agent/chapter15/index.md) | Agent 把 naive kernel 优化 3-5x、失败回退、对比报告 | 🚧 |
+| [第 13 章 Agent 入门](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part3-agent/chapter13/index.md) | 参考 hello-agents、LLM Agent 基本范式、工具调用 | 🚧 |
+| [第 14 章 工具封装](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part3-agent/chapter14/index.md) | benchmark/profiling/编译包成 Agent 可调用工具 | 🚧 |
+| [第 15 章 算子优化 Agent 设计](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part3-agent/chapter15/index.md) | 读题→生成 kernel→跑分→反思迭代 | 🚧 |
+| [第 16 章 多轮优化实战](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part3-agent/chapter16/index.md) | Agent 把 naive kernel 优化 3-5x、失败回退、对比报告 | 🚧 |
 | **第 4 篇：真实模型 + Agent** | | |
-| [第 16 章 YOLO 部署 + Agent 自动优化](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part4-models-agent/chapter16/index.md) | ONNX/MIGraphX 部署、Agent profiling 找瓶颈、改配置/算子、对比 | 🚧 |
-| [第 17 章 小模型 LLM 解码 + Agent 自动优化](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part4-models-agent/chapter17/index.md) | Qwen 0.5B/1.8B 量化、decode 算子视角、Agent 优化 KV cache/精度 | 🚧 |
+| [第 17 章 YOLO 部署 + Agent 自动优化](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part4-models-agent/chapter17/index.md) | ONNX/MIGraphX 部署、Agent profiling 找瓶颈、改配置/算子、对比 | 🚧 |
+| [第 18 章 小模型 LLM 解码 + Agent 自动优化](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part4-models-agent/chapter18/index.md) | Qwen 0.5B/1.8B 量化、decode 算子视角、Agent 优化 KV cache/精度 | 🚧 |
 
 ## 贡献者名单
 
