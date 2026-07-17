@@ -21,6 +21,8 @@ skills-lock.json
 **/logs/
 AGENTS.md
 **/EXPERIMENT.md
+code/**/profiles/
+code/**/results/
 scripts/gpu-queue
 bak/
 
