@@ -121,11 +121,13 @@ export const parts = [
     navText: '算子优化',
     title: '经典算子与 Kernel 实战',
     readmeTitle: '第 2 篇：经典算子与 Kernel 实战',
+    landing: '/part2-kernels/',
+    landingSource: 'docs/part2-kernels/index.md',
     chapters: [
       {
         title: 'Element-Wise：逐元素算子',
         summary: '以 Vector Add 为例，分别用 HIP 深入理解访存，用 Triton 快速掌握 tile 编程',
-        status: '🚧',
+        status: '✅',
         lead: '本章从最容易看懂的 Vector Add 开始，先认识“逐元素”到底是什么意思，再把同一个问题拆成两条可以独立选择的路线：HIP 篇带你看清线程、地址和显存访问，Triton 篇带你用较少代码表达一整块数据。两条路线最后回到同一组正确性与性能问题，让你知道工具不同，判断方法为什么仍然相通。',
         sections: [
           ['先认识 Element-Wise', '从输出元素依赖关系出发，认识 Add、ReLU、Scale & Bias 等逐元素算子的共同结构。'],
@@ -140,16 +142,15 @@ export const parts = [
       {
         title: 'Reduction：归约算子',
         summary: '以 Sum Reduction 为例，学习跨线程协作、LDS 与 Wave Shuffle',
-        status: '🚧',
+        status: '✅',
         lead: '本章撤掉 Element-Wise 中“每个输出彼此独立”的前提：很多输入要共同得到一个结果。公共部分先把串行求和画成并行树；HIP 篇深入 LDS、同步与 Wave Shuffle，Triton 篇用 program partial 和多阶段归约快速表达同一层次。',
         sections: [
           ['什么是归约算子', '从多输入到少输出的数据依赖出发，区分 sum、max 与 argmax。'],
           ['从串行求和到并行树', '手算一个小数组，对比线性依赖与树形依赖。'],
           ['固定正确性与测量口径', '明确浮点误差、非二次幂长度和完整多阶段计时。'],
-          ['HIP v0：逐元素 atomic baseline', '用全局同地址争用建立最短的正确起点。'],
-          ['HIP v1：LDS block 内归约', '协作加载、同步并逐轮收缩活动线程。'],
-          ['HIP v2：寄存器局部累加', '先让每个线程得到局部和，再进入 LDS。'],
-          ['HIP v3/v4：Wave Shuffle 与多阶段 partial', '减少同步，并把跨 block 合并拆成独立阶段。'],
+          ['HIP atomic baseline', '用全局同地址争用建立最短的正确起点。'],
+          ['HIP LDS block 归约', '协作加载、同步并逐轮收缩活动线程，每个 block 最后一次 atomic。'],
+          ['HIP 二阶段归约', '先生成 bounded partial，再用独立 dispatch 完成跨 block 合并。'],
           ['Triton t0：program partial', '说明一个 program 怎样覆盖一段输入并使用 tl.sum。'],
           ['Triton t1：多阶段归约', '用 partial buffer 与第二次 dispatch 完成跨 program 合并。'],
           ['HIP 与 Triton 的归约层次对照', '对齐局部和、组内归约与跨组合并。'],
@@ -159,17 +160,16 @@ export const parts = [
       {
         title: 'Normalization：归一化算子',
         summary: '以行级 Softmax 为例，学习数值稳定与逐元素/归约融合',
-        status: '🚧',
+        status: '✅',
         lead: '本章把 Element-Wise 与 Reduction 组合起来：Softmax 既要逐元素取指数，又要两次归约。公共部分先用大数反例理解“减最大值”；HIP 篇观察中间写回与数据驻留，Triton 篇学习一行对应一个 program 的融合表达。',
         sections: [
           ['归一化算子解决什么问题', '从 logits 到概率，先固定逐行 Softmax 语义。'],
           ['为什么直接指数会溢出', '用小例子推导减最大值，而不是只给公式。'],
           ['Softmax 由哪些基本模式组成', '拆成 max reduction、element-wise exp、sum reduction 与 normalize。'],
-          ['HIP v0：稳定的多 kernel baseline', '先保证数值正确，并统计完整路径。'],
-          ['HIP v1/v2：融合 dispatch 与寄存器驻留', '区分少一次 launch 与少一次全局写回。'],
-          ['HIP v3：Wave32 收尾', '保持数据映射不变，只替换 block 内归约机制。'],
-          ['Triton t0：一行对应一个 program', '讲清 mask、next power of 2 与行内 reduction。'],
-          ['Triton t1：block size 与 num warps', '只做受控参数实验，并允许参数变大反而变慢。'],
+          ['HIP baseline：三个 kernel', '先保证数值正确，并显式保留 max、exp/sum、normalize 阶段。'],
+          ['HIP fused：block 级 LDS 归约', '一行一个 block，在同一 kernel 中完成两次归约与归一化。'],
+          ['Triton t0 compact', '一行对应一个 program，使用紧凑 block 与 mask。'],
+          ['Triton t1 wide', '只改变 block size 与 num warps，并保留变慢的负结果。'],
           ['HIP 与 Triton 的融合边界', '比较显式寄存器/LDS 控制与编译器生成映射。'],
           ['稳定性压力测试与练习', '覆盖大正值、大负值、尾行、长行和不同 dtype。']
         ]
@@ -177,56 +177,52 @@ export const parts = [
       {
         title: 'GEMM-Like：矩阵乘类算子',
         summary: '以 Matmul 为例，学习分块、数据复用与寄存器累加',
-        status: '🚧',
+        status: '✅',
         lead: '本章第一次让同一份输入被多个输出反复使用。公共部分从点积和小矩阵开始画 tile；HIP 篇显式管理 LDS 与线程 fragment，Triton 篇用 program/tile 表达同一复用，并把 autotune 限制为可解释的受控实验。',
         sections: [
           ['从点积看矩阵乘', '用小矩阵说明输出元素、M/N/K 与 row-major 地址。'],
           ['为什么朴素实现重复读取', '区分算法级计算强度、源码请求字节和物理流量。'],
           ['Tile 为什么能带来复用', '先画块级数据生命周期，再进入代码。'],
-          ['HIP v0：一线程一输出', '建立最短的正确点积 baseline。'],
-          ['HIP v1：LDS 分块', '协作加载 A/B tile，处理同步、尾块与 bank 风险。'],
-          ['HIP v2/v3：一维与二维寄存器分块', '让一个线程计算多个输出，同时跟踪 VGPR 压力。'],
-          ['HIP 进阶实验', '只选择一项已实测的 K tile、双缓冲或 WMMA 机制。'],
-          ['Triton t0：用 tl.dot 写 tiled Matmul', '解释 program id、M/N tile 与 K 循环。'],
-          ['Triton t1：program 排序与受控 autotune', '限制搜索空间，并把选型结果落盘。'],
+          ['HIP naive：一线程一输出', '建立最短的正确点积 baseline。'],
+          ['HIP tiled：LDS 分块', '协作加载 A/B tile，处理同步与 M/N/K 尾块。'],
+          ['寄存器分块等进阶方向', '作为下一轮单变量实验设计，不冒充已实现版本。'],
+          ['Triton baseline：用 tl.dot 写 tiled Matmul', '解释 program id、M/N tile 与 K 循环。'],
+          ['Triton grouped：只改变 program 排序', '固定 tile 与 warps，观察范围重叠的负结果。'],
           ['HIP 与 Triton 的分块层次对照', '比较 block/thread fragment 与 program/tile。'],
           ['复跑与练习', '覆盖非方阵、非整除形状、转置布局与参数反例。']
         ]
       },
       {
         title: 'Fusion：融合算子',
-        summary: '以 FlashAttention 为例，学习在线计算、减少中间写回与 IO-aware',
-        status: '🚧',
-        lead: '本章把前四章的模式组合起来：矩阵乘产生 Scores，Softmax 做归一化，再与 V 相乘。公共部分先比较物化与在线数据流；HIP/Triton 两篇分别实现教学版前向 FlashAttention，并用完整路径验证减少中间写回的价值。',
+        summary: '用 FlashAttention-style 在线 Attention 学习减少中间写回与 IO-aware',
+        status: '✅',
+        lead: '本章把前四章的模式组合起来：矩阵乘产生 Scores，Softmax 做归一化，再与 V 相乘。公共部分先比较物化与在线数据流；HIP/Triton 两条路线分别实现教学版前向 Attention，并已完成三进程正式测量与逐实现 trace。',
         sections: [
           ['从普通 Attention 数据流开始', '只补本章需要的 Q/K/V、Scores、Softmax 与输出。'],
           ['物化中间矩阵的代价', '画出三段 kernel 与 Scores/P 的全局读写路径。'],
           ['在线 Softmax 怎样保持精确', '手算 running max、normalizer、历史重缩放与输出累加。'],
-          ['固定语义、边界与测量口径', '明确 FP16 输入、FP32 累加、causal、尾块和完整时间。'],
-          ['HIP h0/h1：从物化基线到在线融合', '先消除完整中间矩阵，再验证正确性。'],
-          ['HIP h2–h4：Wave、query/key 分块与 K/V 复用', '每轮只改变一个机制并跟踪资源代价。'],
-          ['Triton t0：物化基线', '保持与 HIP 相同的数学语义与计时边界。'],
-          ['Triton t1–t3：在线 query/key tile', '解释块级状态、mask 与寄存器/scratch 风险。'],
+          ['固定语义、边界与测量口径', '先用单 batch、单 head、FP32 前向固定数学语义、尾块和完整时间，再把 causal 与低精度留作练习。'],
+          ['HIP materialized：三段式基线', '显式写出 Scores/Probability，再与在线版本共享语义和 reference。'],
+          ['HIP online：教学化在线融合', '消除完整中间矩阵，同时暴露频繁同步带来的负结果。'],
+          ['Triton t0/t1：在线 query/key tile', '保持相同算法，只对 key tile 与 warps 做受控配置对照。'],
           ['完整证据与实现边界', '汇总时间、分配字节、dispatch、正确性与资源字段。'],
           ['从组合到融合的方法总结', '回收 Element-Wise、Reduction、Normalization 与 GEMM-Like。']
         ]
       },
       {
-        title: 'Kernel 实战：LeetGPU',
-        summary: '读题、分类、本地评测、提交、调试与性能迭代',
-        status: '🚧',
-        lead: '本章把前面五类算子积累的经验变成一套真正可执行的刷题流程：读懂接口与约束、判断题型、先写正确版本、用本地评测器覆盖边界、再到平台运行和提交。平台托管成绩与本书 9070XT 本地实验分开记录，但读题、验证和迭代的方法可以相互迁移。',
+        title: '综合实战：Fused RMSNorm',
+        summary: '综合逐元素、归约与融合，独立完成一次可复现的 Kernel 优化闭环',
+        status: '✅',
+        lead: '本章是 Part 2 的综合终章：不再引入新的优化名词，而是用 Fused RMSNorm 把逐元素、归约、融合、正确性、benchmark 与 profiling 串成一次独立完成的优化记录。HIP/Triton、边界正确性、三进程测量与逐实现 trace 已完成。',
         sections: [
-          ['LeetGPU 题目与当前平台边界', '写作时重新核对官方支持语言、评分和提交环境，并把平台托管结果与 9070XT 本地实验分开。'],
-          ['一道 Kernel 题由什么组成', '读清函数签名、输入约束、正确性、性能 shape 和评分口径。'],
-          ['先把题目归类', '映射到 Element-Wise、Reduction、Normalization、GEMM-Like 或 Fusion，再选择熟悉的模式。'],
-          ['建立参考实现与本地评测器', '先喂输入、对答案、覆盖边界，再在 9070XT 上做独立计时。'],
-          ['把第 7 章 Triton 模板改成提交模板', '复用 kernel、grid、mask 与测试骨架，不在本章第一次教授 Triton。'],
-          ['完整走一题：从正确到可优化', '展示读题、t0、失败样例、性能假设、t1 和复测全过程。'],
-          ['怎么读 benchmark 与排行榜', '区分平台噪声、隐藏 shape、单点特化和可泛化实现。'],
-          ['常见错误与调试顺序', '按越界、mask、布局、dtype、数值误差、编译失败和超时的顺序排查。'],
-          ['一条循序渐进的刷题路线', '按第 7–11 章的依赖顺序安排题型，不承诺具体排名或 AC。'],
-          ['从 LeetGPU 带回 9070XT', '说明哪些方法可以迁移，哪些平台成绩不能当作 AMD 实测数据。']
+          ['从 LayerNorm 到 RMSNorm', '从公式和数据流解释 RMSNorm 保留了什么、移除了什么，以及它为什么适合作为综合题。'],
+          ['固定数学语义、误差和目标 Shape', '先锁定 dtype、归约轴、epsilon、参考实现、误差标准和目标输入，再讨论优化。'],
+          ['HIP：从分步 Baseline 到融合实现', '先建立分步正确版本，再逐次验证归约、数据驻留与融合边界。'],
+          ['Triton：一行一个 Program', '用一个 program 覆盖一行，受控实验 block size、num warps 与长行边界。'],
+          ['正确性、Benchmark 与 Profiling', '用统一矩阵、kernel-only 口径和可追溯证据比较各版本。'],
+          ['独立优化记录与失败回退', '保留每轮假设、单变量改动、负结果和回退点，形成可复跑报告。'],
+          ['从 RMSNorm 迁移到新题目', '把逐元素、归约和融合模式迁移到新的算子规格，而不是背最终代码。'],
+          ['拓展练习：LeetGPU 与其他平台', '平台题目、运行环境与评分口径单独核对，平台成绩不替代本地实验。']
         ]
       }
     ]
@@ -393,6 +389,7 @@ export const navItems = [
 export const sidebar = [
   ...parts.map((part) => ({
     text: part.readmeTitle,
+    ...(part.landing ? { link: part.landing } : {}),
     collapsed: false,
     items: chapters
       .filter((chapter) => chapter.part.prefix === part.prefix)

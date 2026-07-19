@@ -15,19 +15,14 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
+from dataclasses import dataclass
 from pathlib import Path
-
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-from matplotlib import font_manager  # noqa: E402
-from matplotlib.patches import Patch  # noqa: E402
-
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[2]
-DEFAULT_SUMMARY = SCRIPT_DIR / "results" / "summary.csv"
+DEFAULT_SUMMARY = SCRIPT_DIR / "evidence" / "summary.csv"
+DEFAULT_MANIFEST = SCRIPT_DIR / "evidence" / "manifest.json"
 DEFAULT_OUTPUT = (
     REPO_ROOT
     / "docs"
@@ -52,8 +47,8 @@ LABELS = {
     "hip-v1-strided": "HIP v1 跨步",
     "hip-v2": "HIP v2 grid-stride",
     "hip-v3": "HIP v3 float4",
-    "triton-t0": "Triton t0 (256)",
-    "triton-t1": "Triton t1 (1024)",
+    "triton-t0": "Triton t0",
+    "triton-t1": "Triton t1",
 }
 
 # figures4papers semantic palette
@@ -98,23 +93,142 @@ PUBLICATION_RCPARAMS = {
 }
 
 
+@dataclass(frozen=True)
+class PublicationLayout:
+    figure_width_inches: float
+    figure_height_inches: float
+    axes_bottom: float
+    footnote_y: float
+    footnote_font_size: float
+    xlabel_font_size: float
+    xlabel_labelpad: float
+    tick_label_font_size: float
+    tick_length: float
+    tick_pad: float
+
+
+def publication_layout() -> PublicationLayout:
+    return PublicationLayout(
+        figure_width_inches=16.0,
+        figure_height_inches=6.4,
+        axes_bottom=0.20,
+        footnote_y=0.02,
+        footnote_font_size=12.0,
+        xlabel_font_size=16.0,
+        xlabel_labelpad=10.0,
+        tick_label_font_size=13.0,
+        tick_length=6.0,
+        tick_pad=3.5,
+    )
+
+
+def footnote_xlabel_clearance_points(layout: PublicationLayout) -> float:
+    figure_height_points = layout.figure_height_inches * 72.0
+    footnote_top = (
+        layout.footnote_y * figure_height_points
+        + layout.footnote_font_size * 1.2
+    )
+    xlabel_bottom = (
+        layout.axes_bottom * figure_height_points
+        - layout.tick_length
+        - layout.tick_pad
+        - layout.tick_label_font_size * 1.2
+        - layout.xlabel_labelpad
+        - layout.xlabel_font_size * 1.2
+    )
+    return xlabel_bottom - footnote_top
+
+
+def format_experiment_subtitle(manifest: dict[str, object]) -> str:
+    software = manifest["software"]
+    benchmark = manifest["benchmark"]
+    size = int(benchmark["size"])
+    return (
+        f'{manifest["hardware"]} | ROCm {software["rocm"]} | '
+        f"N={size:,} FP32 | kernel-only GPU event 计时"
+    )
+
+
+def format_experiment_note(manifest: dict[str, object]) -> str:
+    runs = int(manifest["benchmark"]["independent_runs"])
+    return (
+        f"柱长 = {runs} 个独立进程 median 的中位数；"
+        "误差线 = 独立进程范围。"
+    )
+
+
+def validate_summary_metadata(
+    rows: list[dict[str, str]], manifest: dict[str, object]
+) -> None:
+    expected_shape = int(manifest["benchmark"]["size"])
+    summary_shapes = {int(row["shape"]) for row in rows}
+    if summary_shapes != {expected_shape}:
+        raise ValueError(
+            f"summary shapes {sorted(summary_shapes)} disagree with manifest "
+            f"shape {expected_shape}"
+        )
+
+    expected_runs = int(manifest["benchmark"]["independent_runs"])
+    summary_run_counts = {int(row["run_count"]) for row in rows}
+    if summary_run_counts != {expected_runs}:
+        raise ValueError(
+            f"summary run counts {sorted(summary_run_counts)} disagree with "
+            f"manifest independent runs {expected_runs}"
+        )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--summary", type=Path, default=DEFAULT_SUMMARY)
+    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUTPUT)
     return parser.parse_args()
 
 
 def read_rows(path: Path) -> list[dict[str, str]]:
     with path.open(encoding="utf-8", newline="") as file:
-        by_name = {row["implementation"]: row for row in csv.DictReader(file)}
-    missing = [name for name in ORDER if name not in by_name]
+        return list(csv.DictReader(file))
+
+
+def order_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        implementation = row["implementation"]
+        counts[implementation] = counts.get(implementation, 0) + 1
+
+    duplicates = sorted(name for name, count in counts.items() if count > 1)
+    if duplicates:
+        raise ValueError(
+            f"summary has duplicate implementations: {', '.join(duplicates)}"
+        )
+
+    implementations = set(counts)
+    missing = [name for name in ORDER if name not in implementations]
+    unexpected = sorted(implementations - set(ORDER))
+    errors: list[str] = []
     if missing:
-        raise ValueError(f"summary is missing implementations: {', '.join(missing)}")
+        errors.append(f"missing implementations: {', '.join(missing)}")
+    if unexpected:
+        errors.append(f"unexpected implementations: {', '.join(unexpected)}")
+    if errors:
+        raise ValueError(f"summary has {'; '.join(errors)}")
+
+    by_name = {row["implementation"]: row for row in rows}
     return [by_name[name] for name in ORDER]
 
 
-def pick_cjk_font() -> None:
+def labels_for_rows(rows: list[dict[str, str]]) -> list[str]:
+    labels: list[str] = []
+    for row in rows:
+        implementation = row["implementation"]
+        label = LABELS[implementation]
+        if implementation.startswith("triton-"):
+            label = f"{label} ({row['block']})"
+        labels.append(label)
+    return labels
+
+
+def pick_cjk_font(plt: object, font_manager: object) -> None:
     candidates = [
         "PingFang SC",
         "Hiragino Sans GB",
@@ -132,13 +246,25 @@ def pick_cjk_font() -> None:
 
 def main() -> None:
     args = parse_args()
-    plt.rcParams.update(PUBLICATION_RCPARAMS)
-    pick_cjk_font()
-    plt.rcParams["axes.unicode_minus"] = False
-
+    manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     rows = read_rows(args.summary)
+    validate_summary_metadata(rows, manifest)
+    rows = order_rows(rows)
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib import font_manager
+    from matplotlib.patches import Patch
+
+    plt.rcParams.update(PUBLICATION_RCPARAMS)
+    pick_cjk_font(plt, font_manager)
+    plt.rcParams["axes.unicode_minus"] = False
+    layout = publication_layout()
+
     names = [row["implementation"] for row in rows]
-    labels = [LABELS[name] for name in names]
+    labels = labels_for_rows(rows)
     bandwidth = [float(row["effective_bandwidth_gbs"]) for row in rows]
     bw_min = [float(row["effective_bandwidth_gbs_run_min"]) for row in rows]
     bw_max = [float(row["effective_bandwidth_gbs_run_max"]) for row in rows]
@@ -166,7 +292,7 @@ def main() -> None:
     figure, (ax_bw, ax_norm) = plt.subplots(
         1,
         2,
-        figsize=(16, 6.4),
+        figsize=(layout.figure_width_inches, layout.figure_height_inches),
         dpi=300,
         sharey=True,
         gridspec_kw={"width_ratios": [1.15, 1.0], "wspace": 0.06},
@@ -191,10 +317,20 @@ def main() -> None:
     ax_bw.set_yticks(positions, labels, fontsize=15)
     ax_bw.invert_yaxis()
     ax_bw.set_xlim(0, max(bandwidth) * 1.18)
-    ax_bw.set_xlabel("有效带宽 (GB/s，按逻辑字节计算)", fontsize=16, labelpad=10)
+    ax_bw.set_xlabel(
+        "有效带宽 (GB/s，按逻辑字节计算)",
+        fontsize=layout.xlabel_font_size,
+        labelpad=layout.xlabel_labelpad,
+    )
     ax_bw.xaxis.grid(True, color=PALETTE["neutral"], linewidth=0.8, alpha=0.6)
     ax_bw.set_axisbelow(True)
-    ax_bw.tick_params(axis="both", length=6, width=1.5, labelsize=13)
+    ax_bw.tick_params(
+        axis="both",
+        length=layout.tick_length,
+        width=1.5,
+        labelsize=layout.tick_label_font_size,
+        pad=layout.tick_pad,
+    )
 
     for bar, value in zip(bars, bandwidth, strict=True):
         ax_bw.text(
@@ -232,10 +368,20 @@ def main() -> None:
         va="bottom",
     )
     ax_norm.set_xlim(0, max(norm_max) * 1.12)
-    ax_norm.set_xlabel("median 时间（相对 HIP v0 归一化）", fontsize=16, labelpad=10)
+    ax_norm.set_xlabel(
+        "median 时间（相对 HIP v0 归一化）",
+        fontsize=layout.xlabel_font_size,
+        labelpad=layout.xlabel_labelpad,
+    )
     ax_norm.xaxis.grid(True, color=PALETTE["neutral"], linewidth=0.8, alpha=0.6)
     ax_norm.set_axisbelow(True)
-    ax_norm.tick_params(axis="both", length=6, width=1.5, labelsize=13)
+    ax_norm.tick_params(
+        axis="both",
+        length=layout.tick_length,
+        width=1.5,
+        labelsize=layout.tick_label_font_size,
+        pad=layout.tick_pad,
+    )
 
     for bar, value in zip(bars2, norm, strict=True):
         ax_norm.text(
@@ -276,20 +422,25 @@ def main() -> None:
     figure.text(
         0.02,
         0.905,
-        "Radeon RX 9070 XT | ROCm 7.13 | 原生 Ubuntu 24.04 | N=16,777,216 FP32 | kernel-only GPU event 计时",
+        format_experiment_subtitle(manifest),
         ha="left",
         fontsize=13,
         color=PALETTE["muted"],
     )
     figure.text(
         0.02,
-        0.02,
-        "柱长 = 3 个独立进程 median 的中位数；误差线 = 3 进程范围。除受控跨步版本外，各实现时间范围彼此重叠。",
+        layout.footnote_y,
+        format_experiment_note(manifest),
         ha="left",
-        fontsize=12,
+        fontsize=layout.footnote_font_size,
         color=PALETTE["muted"],
     )
-    figure.subplots_adjust(left=0.16, right=0.985, top=0.84, bottom=0.13)
+    figure.subplots_adjust(
+        left=0.16,
+        right=0.985,
+        top=0.84,
+        bottom=layout.axes_bottom,
+    )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(args.out, facecolor="white")

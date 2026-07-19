@@ -1,8 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SOURCE_COMMIT="${SOURCE_COMMIT:-}"
+if [[ ! "${SOURCE_COMMIT}" =~ ^[0-9a-f]{7,40}$ ]]; then
+    echo "SOURCE_COMMIT must be a 7-40 character lowercase Git SHA" >&2
+    exit 2
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PART_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+if [[ ! -f "${PART_DIR}/activate-rocm.sh" ]]; then
+    echo "missing ${PART_DIR}/activate-rocm.sh" >&2
+    exit 1
+fi
+# shellcheck source=/dev/null
+source "${PART_DIR}/activate-rocm.sh"
+SOURCE_SHA256="$(python "${SCRIPT_DIR}/summarize_results.py" --chapter-dir "${SCRIPT_DIR}" --print-source-sha256)"
 LOG_DIR="${SCRIPT_DIR}/logs"
 PROFILE_DIR="${SCRIPT_DIR}/profiles"
 GPU_ARCH="${GPU_ARCH:-gfx1201}"
@@ -23,13 +36,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "${LOG_DIR}/runs" "${PROFILE_DIR}" "${SCRIPT_DIR}/results"
-rm -f "${LOG_DIR}/runs"/hip_run*.log "${LOG_DIR}/runs"/triton_run*.log
+mkdir -p "${LOG_DIR}/runs" "${PROFILE_DIR}"
+rm -f "${LOG_DIR}/runs"/run*.log "${LOG_DIR}/runs"/hip_run*.log "${LOG_DIR}/runs"/triton_run*.log
 
 {
     echo "timestamp=$(date -Iseconds)"
+    echo "source_commit=${SOURCE_COMMIT}"
+    echo "source_sha256=${SOURCE_SHA256}"
     echo "size=${SIZE}"
     echo "hip_block=${HIP_BLOCK}"
+    echo "triton_t0_block=256"
     echo "triton_block=${TRITON_BLOCK}"
     echo "warmup=${WARMUP}"
     echo "repeat=${REPEAT}"
@@ -38,18 +54,8 @@ rm -f "${LOG_DIR}/runs"/hip_run*.log "${LOG_DIR}/runs"/triton_run*.log
     echo "gpu_arch=${GPU_ARCH}"
     echo "run_edge_cases=${RUN_EDGE_CASES}"
     echo "run_triton_viz=${RUN_TRITON_VIZ}"
-    if [[ -n "${GRID:-}" ]]; then
-        echo "grid=${GRID}"
-    fi
+    echo "grid=${GRID:-auto}"
 } > "${LOG_DIR}/benchmark_manifest.env"
-
-if [[ ! -f "${PART_DIR}/activate-rocm.sh" ]]; then
-    echo "missing ${PART_DIR}/activate-rocm.sh" >&2
-    exit 1
-fi
-
-# shellcheck source=/dev/null
-source "${PART_DIR}/activate-rocm.sh"
 
 if command -v rocm-smi >/dev/null 2>&1; then
     rocm-smi --showuse --showmemuse \
@@ -132,7 +138,7 @@ if ((INDEPENDENT_RUNS > 0)); then
             --size "${SIZE}" \
             --warmup "${WARMUP}" \
             --repeat "${REPEAT}" \
-            > "${LOG_DIR}/runs/hip_run${run}.log" 2>&1
+            > "${LOG_DIR}/runs/run${run}.log" 2>&1
 
         python "${SCRIPT_DIR}/vector_add_triton.py" \
             --version all \
@@ -141,10 +147,12 @@ if ((INDEPENDENT_RUNS > 0)); then
             --warmup "${WARMUP}" \
             --repeat "${REPEAT}" \
             --seed "${SEED}" \
-            > "${LOG_DIR}/runs/triton_run${run}.log" 2>&1
+            >> "${LOG_DIR}/runs/run${run}.log" 2>&1
     done
 fi
 
-python "${SCRIPT_DIR}/summarize_results.py"
+python "${SCRIPT_DIR}/summarize_results.py" \
+    --chapter-dir "${SCRIPT_DIR}" \
+    --git-commit "${SOURCE_COMMIT}"
 echo "logs written to ${LOG_DIR}"
-echo "summary written to ${SCRIPT_DIR}/results"
+echo "summary written to ${SCRIPT_DIR}/evidence"

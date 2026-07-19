@@ -1,8 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SOURCE_COMMIT="${SOURCE_COMMIT:-}"
+if [[ ! "${SOURCE_COMMIT}" =~ ^[0-9a-f]{7,40}$ ]]; then
+    echo "SOURCE_COMMIT must be a 7-40 character lowercase Git SHA" >&2
+    exit 2
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PART_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+if [[ ! -f "${PART_DIR}/activate-rocm.sh" ]]; then
+    echo "missing ${PART_DIR}/activate-rocm.sh" >&2
+    exit 1
+fi
+# shellcheck source=/dev/null
+source "${PART_DIR}/activate-rocm.sh"
+SOURCE_SHA256="$(python "${SCRIPT_DIR}/summarize_results.py" --chapter-dir "${SCRIPT_DIR}" --print-source-sha256)"
 LOG_DIR="${SCRIPT_DIR}/logs"
 PROFILE_DIR="${SCRIPT_DIR}/profiles"
 GPU_ARCH="${GPU_ARCH:-gfx1201}"
@@ -21,14 +34,6 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "${LOG_DIR}" "${PROFILE_DIR}"
-
-if [[ ! -f "${PART_DIR}/activate-rocm.sh" ]]; then
-    echo "missing ${PART_DIR}/activate-rocm.sh" >&2
-    exit 1
-fi
-
-# shellcheck source=/dev/null
-source "${PART_DIR}/activate-rocm.sh"
 
 bash "${SCRIPT_DIR}/collect_environment.sh" \
     2>&1 | tee "${LOG_DIR}/profile_environment.log"
@@ -92,16 +97,20 @@ for version in t0 t1; do
 done
 
 {
+    echo "source_commit=${SOURCE_COMMIT}"
+    echo "source_sha256=${SOURCE_SHA256}"
     echo "size=${SIZE}"
     echo "hip_block=${HIP_BLOCK}"
+    echo "triton_t0_block=256"
     echo "triton_block=${TRITON_BLOCK}"
     echo "warmup=${PROFILE_WARMUP}"
     echo "repeat=${PROFILE_REPEAT}"
     echo "seed=${SEED}"
     echo "gpu_arch=${GPU_ARCH}"
-    if [[ -n "${GRID:-}" ]]; then
-        echo "grid=${GRID}"
-    fi
+    echo "grid=${GRID:-auto}"
 } > "${PROFILE_DIR}/profile_config.env"
 
+python "${SCRIPT_DIR}/summarize_results.py" \
+    --chapter-dir "${SCRIPT_DIR}" \
+    --git-commit "${SOURCE_COMMIT}"
 echo "profiles written to ${PROFILE_DIR}"
