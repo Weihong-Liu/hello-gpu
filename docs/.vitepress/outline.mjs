@@ -387,6 +387,7 @@ export const navItems = [
   { text: '首页', link: '/' },
   { text: '全书目录', link: '/part0-intro/chapter0/' },
   { text: '实验环境', link: '/part0-intro/chapter1/' },
+  { text: 'AMD 云算力', link: '/cloud/' },
   { text: 'GitHub', link: 'https://github.com/datawhalechina/hello-gpu' },
 ]
 
@@ -414,4 +415,13 @@ export const sidebar = [
         },
       ]
     : []),
+  {
+    text: 'AMD 云算力资源',
+    link: '/cloud/',
+    collapsed: false,
+    items: [
+      { text: 'AMD Radeon Cloud', link: '/cloud/amd-radeon-cloud/' },
+      { text: 'AUP Learning Cloud', link: '/cloud/aup-learning-cloud/' },
+    ],
+  },
 ]

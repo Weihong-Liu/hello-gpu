@@ -1,5 +1,12 @@
 <h1 align="center"> Hello GPU ⚠️ Alpha内测版 </h1>
 
+<div align="center">
+
+<a href="https://datawhalechina.github.io/hello-gpu/cloud/amd-radeon-cloud/"><img src="https://img.shields.io/badge/%E2%98%81%EF%B8%8F_AMD_Radeon_Cloud-%E4%BA%91%E7%AE%97%E5%8A%9B-00a3e0?logo=amd&logoColor=white&labelColor=1a1a1a" height="28"></a> | <a href="https://datawhalechina.github.io/hello-gpu/cloud/aup-learning-cloud/"><img src="https://img.shields.io/badge/%E2%98%81%EF%B8%8F_AUP_Learning_Cloud-%E7%AB%AF%E4%BE%A7%E7%AE%97%E5%8A%9B-00a3e0?logo=amd&logoColor=white&labelColor=1a1a1a" height="28"></a>
+
+</div>
+
+
 > [!CAUTION]
 > ⚠️ Alpha内测版本警告：此为早期内部构建版本，尚不完整且可能存在错误，欢迎大家提Issue反馈问题或建议。
 

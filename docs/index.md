@@ -8,6 +8,9 @@ hero:
     - theme: brand
       text: 开始学习
       link: /part0-intro/chapter0/
+    - theme: alt
+      text: AMD 云算力资源
+      link: /cloud/
 
 features:
   - title: 🔧 AMD First
@@ -20,6 +23,9 @@ features:
     details: 把「人做的优化流程」封装给 Agent 自动做：从单 kernel 到真实模型（YOLO/LLM）
   - title: 🧪 实测基线
     details: 所有实验默认在 Radeon RX 9070 XT + ROCm 7.13（原生 Ubuntu 24.04）上验证，其他设备先参考方法论
+  - title: ☁️ 云算力资源
+    details: 无需本地 GPU，浏览器即可使用 AMD Radeon Cloud 或 AUP Learning Cloud 开展 ROCm 实践
+    link: /cloud/
   - title: 📖 入门 + 4 篇正文，共 18 章
     details: 入门与硬件速通 → Profiling 实战 → 算子优化 + 刷题 → Agent（算子层）→ 真实模型 + Agent
 ---
