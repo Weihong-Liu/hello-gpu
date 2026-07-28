@@ -7,7 +7,7 @@ description: "从 Element-Wise 到 Fused RMSNorm，用 HIP 与 Triton 完成可�
 
 Part 1 已经教你量准时间、找到慢点并用 Roofline 选择排查方向。Part 2 开始把这些方法真正用在算子上：先固定数学语义和正确性，再提出瓶颈假设，分别沿 HIP 与 Triton 迭代，最后用同一份证据回答“改动有没有用”。
 
-第 7–12 章的正文、HIP/Triton 教学代码、边界正确性、3 个独立正式进程、逐实现 `rocprofv3` trace、curated evidence 与实验记录均已完成。所有性能结论都绑定 RX 9070 XT 上的固定 shape 和源码提交，不把教学结果外推为硬件通用结论。
+第 8–13 章的正文、HIP/Triton 教学代码、边界正确性、3 个独立正式进程、逐实现 `rocprofv3` trace、curated evidence 与实验记录均已完成。所有性能结论都绑定 RX 9070 XT 上的固定 shape 和源码提交，不把教学结果外推为硬件通用结论。
 
 ## 这篇解决什么问题
 
@@ -26,10 +26,10 @@ Part 2 不把“优化技巧”整理成孤立清单，而是让六章依次引�
 
 开始前，建议先完成下面四个前置检查：
 
-1. 能运行第 3 章的 Vector Add，并看懂 `blockIdx.x * blockDim.x + threadIdx.x` 如何得到全局下标。
-2. 能按第 4 章的方法做 warmup、repeat、GPU event 计时，并明确 kernel-only 与端到端计时的边界。
-3. 能按第 5 章用 kernel trace 找到目标 dispatch，读取 grid、workgroup 与资源字段。
-4. 能按第 6 章从逻辑 FLOP、逻辑字节和实测时间建立成本模型；知道逻辑有效带宽不等于物理显存流量。
+1. 能运行第 4 章的 Vector Add，并看懂 `blockIdx.x * blockDim.x + threadIdx.x` 如何得到全局下标。
+2. 能按第 5 章的方法做 warmup、repeat、GPU event 计时，并明确 kernel-only 与端到端计时的边界。
+3. 能按第 6 章用 kernel trace 找到目标 dispatch，读取 grid、workgroup 与资源字段。
+4. 能按第 7 章从逻辑 FLOP、逻辑字节和实测时间建立成本模型；知道逻辑有效带宽不等于物理显存流量。
 
 如果其中一项还不熟，先回到对应章节复跑最小实验。Part 2 不重复安装环境、可信计时和完整 Roofline 入门，只在每章给出与当前算子直接相关的口径。
 
@@ -39,14 +39,14 @@ Part 2 不把“优化技巧”整理成孤立清单，而是让六章依次引�
 
 | 顺序 | 章节 | 新增的核心问题 | 当前范围 |
 | ----: | ---- | ---- | ---- |
-| 1 | [第 7 章 Element-Wise：逐元素算子](./chapter7/index.md) | 输出彼此独立时，怎样划分下标、保持连续访问并处理尾部 | 完整正文与 curated evidence |
-| 2 | [第 8 章 Reduction：归约算子](./chapter8/index.md) | 多个输入共同生成较少输出时，怎样做跨线程协作 | 正文 + HIP/Triton + evidence |
-| 3 | [第 9 章 Softmax（Normalization）](./chapter9/index.md) | 怎样把数值稳定的归约与逐元素计算组合起来 | 正文 + HIP/Triton + evidence |
-| 4 | [第 10 章 GEMM-Like：矩阵乘类算子](./chapter10/index.md) | 怎样用 tile、数据复用和寄存器累加提高计算强度 | 正文 + HIP/Triton + evidence |
-| 5 | [第 11 章 Attention/Fusion](./chapter11/index.md) | 怎样在线计算并减少中间结果的全局写回 | 教学前向 + HIP/Triton + evidence |
-| 6 | [第 12 章 综合实战：Fused RMSNorm](./chapter12/index.md) | 怎样综合逐元素、归约与融合，独立完成完整优化闭环 | 正文 + HIP/Triton + evidence |
+| 1 | [第 8 章 Element-Wise：逐元素算子](./chapter8/index.md) | 输出彼此独立时，怎样划分下标、保持连续访问并处理尾部 | 完整正文与 curated evidence |
+| 2 | [第 9 章 Reduction：归约算子](./chapter9/index.md) | 多个输入共同生成较少输出时，怎样做跨线程协作 | 正文 + HIP/Triton + evidence |
+| 3 | [第 10 章 Softmax（Normalization）](./chapter10/index.md) | 怎样把数值稳定的归约与逐元素计算组合起来 | 正文 + HIP/Triton + evidence |
+| 4 | [第 11 章 GEMM-Like：矩阵乘类算子](./chapter11/index.md) | 怎样用 tile、数据复用和寄存器累加提高计算强度 | 正文 + HIP/Triton + evidence |
+| 5 | [第 12 章 Attention/Fusion](./chapter12/index.md) | 怎样在线计算并减少中间结果的全局写回 | 教学前向 + HIP/Triton + evidence |
+| 6 | [第 13 章 综合实战：Fused RMSNorm](./chapter13/index.md) | 怎样综合逐元素、归约与融合，独立完成完整优化闭环 | 正文 + HIP/Triton + evidence |
 
-第 12 章不是突然出现的新技巧，而是一次结业题：数学语义来自 RMSNorm，数据依赖复用 Reduction，融合边界复用 Softmax 与 Attention/Fusion，实验记录则沿用前五章的统一契约。
+第 13 章不是突然出现的新技巧，而是一次结业题：数学语义来自 RMSNorm，数据依赖复用 Reduction，融合边界复用 Softmax 与 Attention/Fusion，实验记录则沿用前五章的统一契约。
 
 ## HIP 与 Triton 两条路线
 
@@ -85,7 +85,7 @@ Part 2 不把“优化技巧”整理成孤立清单，而是让六章依次引�
 - 至少一个负结果或适用边界；
 - 可以由另一位读者执行的复跑命令与完成信号。
 
-完成第 12 章后，可以把同一闭环迁移到陌生题目。LeetGPU 与其他平台只作为拓展练习入口：平台的题目约束、运行环境和排行榜口径需要单独核对，平台成绩不能替代本书实验机上的本地证据。
+完成第 13 章后，可以把同一闭环迁移到陌生题目。LeetGPU 与其他平台只作为拓展练习入口：平台的题目约束、运行环境和排行榜口径需要单独核对，平台成绩不能替代本书实验机上的本地证据。
 
 ## 运行环境与证据入口
 
@@ -96,17 +96,17 @@ Part 2 当前发布证据的实验基线是 **Radeon RX 9070 XT（gfx1201）+ RO
 ```text
 code/part2-kernels/
 ├── activate-rocm.sh
-├── chapter7/
+├── chapter8/
 │   ├── EXPERIMENT.md
 │   ├── run_all.sh
 │   ├── profile_all.sh
 │   └── evidence/
-├── chapter8/   # Reduction：HIP / Triton / run_all.sh
-├── chapter9/   # Softmax：HIP / Triton / run_all.sh
-├── chapter10/  # GEMM：HIP / Triton / run_all.sh
-├── chapter11/  # Attention：HIP / Triton / run_all.sh
-├── chapter12/  # RMSNorm：HIP / Triton / run_all.sh
+├── chapter9/   # Reduction：HIP / Triton / run_all.sh
+├── chapter10/   # Softmax：HIP / Triton / run_all.sh
+├── chapter11/  # GEMM：HIP / Triton / run_all.sh
+├── chapter12/  # Attention：HIP / Triton / run_all.sh
+├── chapter13/  # RMSNorm：HIP / Triton / run_all.sh
 └── tests/
 ```
 
-第 7–12 章的发布表格都只读取各章 `evidence/` 中的 curated evidence；实验环境、参数、源码身份、三进程范围、负结果和复跑流程记录在各章 `EXPERIMENT.md`。原始日志与完整 trace 不进入 Git，正文中的排名只描述对应固定 shape。
+第 8–13 章的发布表格都只读取各章 `evidence/` 中的 curated evidence；实验环境、参数、源码身份、三进程范围、负结果和复跑流程记录在各章 `EXPERIMENT.md`。原始日志与完整 trace 不进入 Git，正文中的排名只描述对应固定 shape。

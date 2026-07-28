@@ -1,227 +1,304 @@
 ---
-title: "第6章 读懂 Roofline 图"
-description: "Hello GPU 第6章 · 看懂参考线、生成工作点并选择排查方向"
+title: "第6章 用 rocprof 找到慢在哪里"
+description: "Hello GPU 第6章 · 对照两个 vector add，只看 kernel 时间、工作划分和 stride 趋势"
 ---
 
-# 第6章 读懂 Roofline 图
+# 第6章 用 rocprof 找到慢在哪里
 
 ## 本章导读
 
-> 第 4 章教你把时间量准，第 5 章教你找到慢在哪个 kernel。本章再往前走一步：把时间、数据量和硬件上限放到同一张 Roofline 图上。
+> 本章只解决一个问题：**两个 vector add 实现速度差很多时，怎么先找到慢在哪个 kernel？**
 >
-> 读完后，你应该能判断一个工作点位于拐点哪一侧、离对应上限还有多远，知道下一步该先查访存还是计算，并把这次结果记成一页以后还能看懂的性能记录。
+> 我们会先用 benchmark 看差距，再用 `rocprofv3` 查看每次 kernel dispatch，最后扫描 `stride` 观察变化趋势。这个案例还会提醒你：命令行里只改一个参数，不代表 GPU 内部只改了一件事。读完后，你应该会定位慢点，也知道什么时候还不能急着下结论。
 
-## 6.1 Roofline 只看三件事
+本章代码在 `code/part1-profiling/chapter6/vector_add.hip`。下面的性能数据来自 **Radeon RX 9070 XT（gfx1201）+ ROCm 7.13 + 原生 Ubuntu 24.04**；换一张卡，数字会变，但操作顺序不变。
 
-这一节把 Roofline 压缩成三个读图动作，不重新推导第 2、3 章已经讲过的公式。把一次实测结果画到图上得到的那个点，后面统一叫**工作点**。
+## 6.1 先看懂两个实现
 
-1. **看横轴落在哪一侧**：算术强度（Arithmetic Intensity，AI）表示每搬运 1 Byte 数据做多少次计算。斜线和水平线的交点叫拐点；工作点在拐点左侧，理论上更容易受带宽限制，在右侧则更容易受算力限制。
-2. **看纵轴有多高**：纵轴是实际计算性能，通常用 FLOPS 表示。工作点越高，说明单位时间完成的计算越多。
-3. **看它离对应上限还有多远**：左侧工作点主要看它到带宽斜线的垂直差距，右侧工作点主要看它到计算水平线的差距。差距很大时，再继续查访存、计算路径、launch 或同步。
+这一节先看两个 kernel 分别怎样把 `n` 个元素分给线程。它们的输出相同，但线程的工作划分并不相同。
 
-| 工作点位置 | 先想到什么 | 常见下一步 |
-| ---- | ---- | ---- |
-| AI 小，接近带宽斜线 | 典型 memory-bound | 减少访存、做融合或提高数据复用 |
-| AI 小，离斜线很远 | 访存效率不高 | 检查地址是否连续、是否有多余读写 |
-| AI 大，靠近水平线 | 典型 compute-bound | 使用 WMMA、降精度或减少计算 |
-| 离两条线都远 | 还有别的开销 | 检查 launch、同步和输入规模 |
+### 6.1.1 连续访存版
 
-Roofline 不会直接告诉你哪一行代码有问题。它更像一张地图：先根据 AI 选择访存或计算方向，再看工作点离相应上限还有多少空间。
+普通 vector add 让线程 `i` 处理元素 `i`：
 
-## 6.2 把 vector add 放到图上
-
-这一节用第 5 章的 vector add 走一遍完整计算。
-
-每个 float32 元素需要：
-
-```text
-读 a[i]：4 Byte
-读 b[i]：4 Byte
-写 c[i]：4 Byte
-做加法：1 FLOP
-
-算术强度 AI = 1 / 12 ≈ 0.083 FLOP/Byte
+```cpp
+__global__ void kernel_coalesced(const float* a, const float* b,
+                                 float* c, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        c[i] = a[i] + b[i];
+    }
+}
 ```
 
-`0.083 FLOP/Byte` 很低，所以 vector add 会落在图的左侧，属于典型的 memory-bound 算子。
+一个 wavefront 里的 lane 0、lane 1、lane 2 会依次访问 `a[0]`、`a[1]`、`a[2]`。这些地址连在一起，GPU 可以把多条线程请求合并成较少的内存事务。这就是**合并访存（Memory Coalescing）**。
 
-画工作点只需要三样东西：
+这个版本每个线程只计算一个输出，因此一共启动约 `n` 个线程。
 
-| 信息 | 从哪里来 |
-| ---- | ---- |
-| 计算量 F | 从 kernel 代码数操作数 |
-| 数据量 B | 从输入、输出的数据类型和元素个数计算 |
-| 时间 t | 用第 4 章的 GPU event 实测 |
+### 6.1.2 linecross 版
 
-计算关系是：
+`linecross` 是本章给对照实现起的名字，不是 ROCm 的标准术语。它让每个 lane 处理一小段连续元素：
 
-```text
-算术强度 AI = F / B
-实际性能 P = F / t
-有效带宽   = B / t
+```cpp
+int tile_base = wave_id * 32 * stride;
+int my_start = tile_base + lane * stride;
+for (int j = 0; j < stride; ++j) {
+    int i = my_start + j;
+    c[i] = a[i] + b[i];
+}
 ```
 
-下面用 Radeon RX 9070 XT（gfx1201）+ ROCm 7.13 + 原生 Ubuntu 24.04 的这组结果演示：
+以 `stride=32` 为例，同一次循环中，各 lane 看到的地址大致是：
 
-| 版本 | AI | 时间 | 实际性能 | 有效带宽 |
-| ---- | ----: | ----: | ----: | ----: |
-| coalesced | 0.083 FLOP/Byte | 0.334 ms | 0.0503 TFLOPS | 603 GB/s |
-| linecross stride=32 | 0.083 FLOP/Byte | 2.25 ms | 0.00748 TFLOPS | 89.7 GB/s |
+```text
+lane 0  -> a[0]
+lane 1  -> a[32]
+lane 2  -> a[64]
+lane 3  -> a[96]
+...
+```
 
-Roofline 的参考线沿用第 2 章独立测得的硬件基线：大数组 copy 的 GDDR6 稳态带宽为 510 GB/s，fp32 matmul 为 10.6 TFLOPS。
+相邻 lane 的起点隔了 32 个 float，也就是 128 字节。地址排布比连续访存版更分散。
 
-这里会出现一个值得认识的现象：coalesced 按 `12 × n / t` 换算出的有效带宽是 603 GB/s，高于 510 GB/s 的 GDDR6 参考线。这不表示显存突破了硬件上限；有效带宽统计的是算法有效字节，而本例的工作集和写路径还可能受到 cache 等因素影响。这个点更适合用来比较两个实现，而不是当作实际 DRAM 流量。
+一个 wavefront 一共处理 `32 × stride` 个输出，所以 stride 变大时会同时发生两件事：
 
-::: figure fig-data-to-roofline
+1. 每个 lane 的循环次数增加；
+2. 需要启动的 wavefront 数减少。
+
+::: figure fig-coalesce-vs-linecross
 ```mermaid
-flowchart TD
-    A[kernel 代码] --> D[计算量 F<br/>数据量 B]
-    B[GPU event] --> E[实测时间 t]
-    D --> F[AI = F / B<br/>P = F / t]
-    E --> F
-    C[带宽与计算参考值] --> G[Roofline 参考线]
-    F --> H[画出工作点]
-    G --> H
-    H --> I{AI 在拐点哪一侧?}
-    I -- 左侧 --> J[先查访存]
-    I -- 右侧 --> K[先查计算]
+flowchart TB
+    subgraph A[连续访存版]
+        A1[lane 地址相邻] --> A2[每个线程 1 个输出]
+        A2 --> A3[启动约 n 个线程]
+    end
+
+    subgraph B[linecross stride=32]
+        B1[lane 起点相隔 128 字节] --> B2[每个线程 32 个输出]
+        B2 --> B3[启动约 n / 32 个线程]
+    end
 ```
 
-从代码、实测时间和硬件上限得到 Roofline 工作点。
+两个实现同时改变了地址排布和线程工作划分。
 :::
 
-如 @fig-data-to-roofline 所示，Roofline 用到的输入并不多。先把数据量和计算量算清楚，再把实测时间代进去即可。图 6.2 的横轴和纵轴都是对数轴，同一格表示倍数变化，而不是固定差值；本例是 fp32，所以只保留 fp32 计算参考线。
+如 @fig-coalesce-vs-linecross 所示，这不是一个“只改地址排布”的严格对照。它适合练习 benchmark 和 kernel trace，也能展示 stride 增大时的整体趋势；但仅凭这组数据，不能把全部性能差距都归因于访存合并。
 
-图 6.2 不是 `rocprofv3` 自动导出的，也不会在绘图时重新运行 vector add。它由仓库中的 `plot_roofline_ch6.py` 生成，脚本使用两组已经测得的数据：
+## 6.2 先跑一遍，确认谁更慢
 
-- 第 2 章的大数组 copy 带宽 `510 GB/s` 和 fp32 matmul 性能 `10.6 TFLOPS`，用来画两条参考线；
-- 第 5 章的 coalesced、linecross 有效带宽，结合 `AI = 1 / 12` 算出两个工作点的纵坐标。
+这一节先不打开 profiler，只用第 5 章的计时方法比较三个配置。
 
-从仓库根目录开始，在实验机上运行：
+从仓库根目录进入本篇环境并编译：
 
 ```bash
-# 实验机执行
 cd code/part1-profiling
 source ./activate-rocm.sh
-python chapter6/plot_roofline_ch6.py --save
+cd chapter6
+mkdir -p logs
+hipcc --offload-arch=gfx1201 -O3 vector_add.hip -o vector_add_bench
 ```
 
-绘图完成后，图片位于 `code/part1-profiling/chapter6/roofline-ch6.png`。
+然后运行连续访存版，再把 `linecross` 的 stride 分别设为 1 和 32：
 
-::: figure fig-roofline-vadd-linecross
-![Ch5/Ch6 实测 Roofline：coalesced 与 linecross 两个工作点](./images/roofline-ch6.png)
+```bash
+./vector_add_bench --kernel coalesced --size 16777216 --block 256 \
+    --warmup 20 --repeat 100 \
+    --output-json logs/coalesced_size16777216.json
 
-第 2、5 章实测数据经绘图脚本生成的 9070XT Roofline 工作点。
-:::
+./vector_add_bench --kernel linecross --size 16777216 --block 256 --stride 1 \
+    --warmup 20 --repeat 100 \
+    --output-json logs/linecross_stride1_size16777216.json
 
-如 @fig-roofline-vadd-linecross 所示，两个版本按算法口径计算出的算术强度相同。蓝色斜线是独立实测的 510 GB/s GDDR6 参考线，红色水平线是 10.6 TFLOPS 的 fp32 计算参考值。两个工作点的区别在纵轴：
+./vector_add_bench --kernel linecross --size 16777216 --block 256 --stride 32 \
+    --warmup 20 --repeat 100 \
+    --output-json logs/linecross_stride32_size16777216.json
+```
 
-- coalesced 的有效带宽为 603 GB/s，点略高于 GDDR6 参考线；
-- linecross stride=32 的有效带宽为 89.7 GB/s，点明显更低。
+先认识会影响本次对照的参数：
 
-这张图只描述两个配置的实测结果，不单独解释 6.7 倍差距来自哪里。第 5 章已经看到，`linecross stride=32` 同时改变了地址排布、每线程循环次数和 Grid Size。
-
-## 6.3 工作点离线很远怎么办
-
-这一节给出一个入门排查顺序。不要一看到工作点低就立刻研究全部硬件细节，先从最容易验证的方向开始。
-
-| 现象 | 第一个问题 | 最简单的检查 |
-| ---- | ---- | ---- |
-| AI 很低，离斜线远 | 地址是否连续 | 做连续 / 分散访存对照 |
-| AI 很高，离水平线远 | 是否走了矩阵计算路径 | 对比 WMMA 和普通 VALU 实现 |
-| 输入很小，点很低 | launch 是否占了大头 | 放大输入，观察时间是否近似线性增长 |
-| 许多短 kernel 串联 | 是否频繁启动和同步 | 看 kernel trace 的数量与间隔 |
-| 使用大量寄存器或 LDS | 是否限制了 occupancy | 对比 VGPR、SGPR、LDS 用量 |
-
-回到 vector add：它的 AI 只有 0.083，所以先从访存方向检查是合理的。不过，第 5 章的 stride 还会同时改变每线程循环次数和 Grid Size；当前曲线只能提示方向，不能单独证明访存合并就是全部原因。下一步应补一个线程数和每线程工作量都固定的对照。
-
-遇到更复杂的算子时也按这个顺序来：**先用 Roofline 选方向，再用 profiler 缩小范围，最后做一个只改一个变量的实验。**
-
-## 6.4 写一页性能记录
-
-这一节把前面的结果记下来，目标是让未来的你知道：当时测了什么、结果怎样、为什么准备这样改。
-
-一页记录保留五项就够：
-
-| 项目 | 写什么 |
+| 参数 | 含义 |
 | ---- | ---- |
-| 环境与对象 | OS、GPU、ROCm、kernel、输入规模和 dtype |
-| 运行命令 | 能再次执行的 benchmark / profiling 命令 |
-| 关键结果 | 时间口径（min / median）和两三个重要数字 |
-| 当前判断 | 用一句话解释慢在哪里 |
-| 下一步 | 只改一个变量的实验 |
+| `--kernel` | 选择 `coalesced` 或 `linecross` |
+| `--size 16777216` | 处理 16M 个 float |
+| `--block 256` | 每个 block 启动 256 个线程 |
+| `--stride` | `linecross` 中每个 lane 负责多少个连续元素 |
+| `--warmup` / `--repeat` | 热身次数和正式计时次数 |
+| `--output-json` | 把本次参数和结果写入 JSON |
 
-可以直接使用下面这个简短模板：
+程序会同时输出延迟和**有效带宽**。按算法口径，vector add 每个元素需要读 `a`、读 `b`、写 `c`，合计 12 B 有效数据，因此：
 
-```markdown
-# 性能记录：<workload>
-
-## 环境与对象
-- OS / GPU / ROCm：<版本>
-- kernel / 输入：<名称、shape、dtype>
-- 计时口径：<warmup、repeat、min 或 median>
-
-## 运行命令
-<benchmark 命令>
-<可选：profiling 命令>
-
-## 关键结果
-| 版本 | 时间 | 有效带宽或吞吐 |
-| ---- | ----: | ----: |
-
-## 当前判断
-<哪一部分慢，依据是什么>
-
-## 下一步
-<只改哪个变量，准备观察什么>
+```text
+有效带宽 = 12 × 元素个数 / kernel 时间
 ```
 
-套到本章的 vector add 上，最核心的三行就是：
+有效带宽是为了方便比较而换算出的数值，不等于硬件实际发出的 DRAM 事务量。
 
-| 版本 | 时间 | 有效带宽 |
-| ---- | ----: | ----: |
-| coalesced | 0.334 ms | 603 GB/s |
-| linecross stride=32 | 2.25 ms | 89.7 GB/s |
+在 9070XT 上得到的结果如下：
 
-当前判断可以写成：`linecross` 的时间会随 stride 整体增加，但 stride 同时改变了地址排布和工作划分。下一步应固定线程数与每线程循环次数，只打开或关闭数据预重排，再重新测量。
+| kernel | stride | 最短时间 | 有效带宽 | 正确性 |
+| ---- | ----: | ----: | ----: | :----: |
+| coalesced | - | 0.334 ms | 603 GB/s | OK |
+| linecross | 1 | 0.336 ms | 599 GB/s | OK |
+| linecross | 32 | 2.25 ms | 89.7 GB/s | OK |
 
-这样的记录已经足够支持下一轮优化。
+`linecross stride=1` 每个线程也只处理一个元素，线程数和连续访存版相同，因此两者时间接近。
 
-## 6.5 Part 1 的四步闭环
+到了 `stride=32`，时间增加到 2.25 ms，约为连续访存版的 **6.7 倍**。现在可以确认这个配置更慢，但还不能确认是地址分散、wavefront 变少，还是两者共同造成。
 
-这一节把 Part 1 收成一条后面可以反复复用的路线。
+## 6.3 用 rocprof 看每次 kernel dispatch
 
-::: figure fig-part1-loop
+这一节只用 `rocprofv3` 的 kernel trace（核函数跟踪），不碰复杂计数器。GPU event 已经给出了计时结果，kernel trace 的新增价值是把每次 dispatch 单独列出来；以后面对包含很多 kernel 的程序，就能用它找到最慢的那一个。
+
+分别采集两个版本：
+
+```bash
+rocprofv3 --kernel-trace -o logs/final_kt_coalesced.csv -f csv \
+    -- ./vector_add_bench --kernel coalesced --size 16777216 --block 256 \
+       --warmup 5 --repeat 10
+
+rocprofv3 --kernel-trace -o logs/final_kt_linecross32.csv -f csv \
+    -- ./vector_add_bench --kernel linecross --size 16777216 --block 256 --stride 32 \
+       --warmup 5 --repeat 10
+```
+
+程序一共启动 15 次 kernel：前 5 次是 warmup，后 10 次才是正式结果。第一次打开生成的 CSV，先找下面几组列：
+
+| 列 | 先用它回答什么 |
+| ---- | ---- |
+| `Kernel_Name` | 到底运行了哪个 kernel |
+| `Start_Timestamp` / `End_Timestamp` | 单次 kernel 花了多久 |
+| `Grid_Size` | 一共启动了多少个 work-item |
+| `VGPR_Count` / `SGPR_Count` | kernel 的寄存器分配 |
+
+时间戳单位是纳秒：
+
+```text
+kernel 时间（μs）= (End_Timestamp - Start_Timestamp) / 1000
+```
+
+跳过最前面的 5 行 warmup，再统计后 10 行。这次运行得到：
+
+| kernel | 单次最短时间 | 中位数 | Grid Size | VGPR | SGPR |
+| ---- | ----: | ----: | ----: | ----: | ----: |
+| `kernel_coalesced` | 329 μs | 330 μs | 16 777 216 | 8 | 128 |
+| `kernel_linecross`（stride=32） | 2202 μs | 2304 μs | 524 288 | 16 | 128 |
+
+这个表先读出三件事：
+
+1. kernel trace 的 329 μs 和 benchmark 的 0.334 ms 基本一致，两种计时方法互相对得上；
+2. `kernel_linecross` 是更慢的 dispatch；
+3. 它的 Grid Size 只有连续访存版的 1/32，说明线程工作划分确实一起变了。
+
+这就是 kernel trace 的第一价值：**先把“程序慢”缩小成“某个 kernel 慢”，再看这个 kernel 的启动配置。**
+
+## 6.4 先列出一起变化的东西
+
+这一节不增加新工具，只检查实验到底同时改了哪些变量。
+
+从源码和 trace 可以列出：
+
+| 变化 | coalesced | linecross stride=32 |
+| ---- | ---- | ---- |
+| 同时访问的地址 | 相邻 | 更分散 |
+| 每个线程处理的输出 | 1 个 | 32 个 |
+| Grid Size | 16 777 216 | 524 288 |
+| kernel 时间 | 0.334 ms | 2.25 ms |
+
+::: figure fig-from-time-to-hypotheses
 ```mermaid
 flowchart LR
-    A[量准<br/>固定输入和计时方法] --> B[找到慢点<br/>benchmark + kernel trace]
-    B --> C[解释<br/>Roofline + 源码]
-    C --> D[验证<br/>只改一个变量]
-    D --> E[进入下一版实现]
-    E --> A
+    A[linecross 更慢] --> B[地址排布变了]
+    A --> C[每线程循环次数变了]
+    A --> D[Grid Size 变了]
+    B --> E[需要新的公平对照]
+    C --> E
+    D --> E
 ```
 
-Part 1 建立的四步性能优化闭环。
+一次改了多件事时，先不要急着把结果归给其中一件。
 :::
 
-如 @fig-part1-loop 所示，这四步分别回答：
+如 @fig-from-time-to-hypotheses 所示，访存合并是一个合理方向，但并不是当前数据唯一支持的解释。有效带宽从 603 GB/s 降到 89.7 GB/s，也只是同一份时间结果换成了带宽单位，不能算第二份独立测量。
 
-1. **量准**：这个数字能不能重复出现；
-2. **找到慢点**：时间花在哪个 kernel；
-3. **解释**：更像访存问题、计算问题，还是启动开销；
-4. **验证**：只改一个变量，结果是否按预期变化。
+## 6.5 看看静态资源有没有变
 
-Part 2 的 Reduction、Softmax、GEMM 和 Attention 会继续使用这条路线。算子会更复杂，但你仍然不需要一次看完所有工具输出，只要沿着当前问题一步步缩小范围。
+这一节检查 VGPR、SGPR 和 LDS。Occupancy（占用率）在这里可以先简单理解成“GPU 能同时保留多少个 wavefront 轮流工作”。
+
+`linecross stride=1` 和 `linecross stride=32` 执行的是同一个编译后的 kernel。stride 是运行时参数，因此两种配置的静态资源分配相同：
+
+| 资源 | linecross stride=1 | linecross stride=32 |
+| ---- | ----: | ----: |
+| VGPR | 16 | 16 |
+| SGPR | 128 | 128 |
+| LDS | 0 | 0 |
+
+这说明寄存器和 LDS 分配不是两个 stride 配置之间的变量。不过，stride 仍然改变了每个线程的循环次数和 Grid Size，所以还不能把剩余差距全部交给访存合并解释。
+
+这一节的结论很窄：**静态资源没变，但工作划分变了。**
+
+## 6.6 用 stride 扫描观察趋势
+
+这一节扫描 `stride`，观察这个 `linecross` 实现的整体性能怎样变化。
+
+```bash
+for s in 1 2 4 8 16 32 64 128 256; do
+    ./vector_add_bench --kernel linecross --size 16777216 --block 256 --stride $s \
+        --warmup 20 --repeat 50 \
+        --output-json logs/linecross_s${s}.json
+done
+```
+
+下面摘出几个代表值：
+
+| stride | 最短时间 | 有效带宽 | 相对 stride=1 耗时 |
+| ----: | ----: | ----: | ----: |
+| 1 | 0.338 ms | 596 GB/s | 1.00× |
+| 8 | 0.405 ms | 497 GB/s | 1.20× |
+| 16 | 1.65 ms | 122 GB/s | 4.89× |
+| 32 | 2.19 ms | 92.1 GB/s | 6.47× |
+| 64 | 4.86 ms | 41.4 GB/s | 14.4× |
+| 256 | 25.3 ms | 7.95 GB/s | 74.9× |
+
+可以直接观察到：stride 整体越大，这个实现越慢。但一个命令行参数同时改变了地址跨度、每线程循环次数和 Grid Size，所以这条曲线描述的是**组合效果**，不是单独的 cache line 或合并访存曲线。
+
+要单独验证访存合并，下一组实验需要固定三件事：
+
+1. 启动相同数量的线程和 wavefront；
+2. 每个线程执行相同次数的循环和加法；
+3. 只改变循环里的索引公式，让一版地址相邻、另一版地址分散。
+
+例如，两版都让每个 lane 处理 32 个元素，只改变访问顺序：
+
+```text
+连续版：i = tile_base + j * 32 + lane
+分散版：i = tile_base + lane * 32 + j
+```
+
+这才是后续应该补跑的公平对照。在这组新数据产生之前，本章停在“找到慢 kernel，并发现实验同时改变了多个底层变量”这个结论上。
+
+::: figure fig-profiling-loop
+```mermaid
+flowchart LR
+    A[benchmark<br/>确认差距] --> B[kernel trace<br/>找到慢 dispatch]
+    B --> C[列出所有变化变量]
+    C --> D[设计公平对照]
+    D --> E[再决定优化方向]
+```
+
+本章走完的最小 profiling 路线。
+:::
+
+如 @fig-profiling-loop 所示，profiler 不会自动替你证明原因。它先帮你找到慢点；真正解释原因，还需要源码检查和公平对照。下一章会把当前两个配置的实测结果放到 Roofline 图上，练习怎样描述工作点的位置。
 
 ## 本章小结
 
-- Roofline 先用横轴和拐点判断理论瓶颈方向，再看工作点离对应上限还有多远。
-- vector add 的 AI 约为 0.083 FLOP/Byte，理论上位于 memory-bound 一侧；有效带宽点还会受到算法口径和 cache 的影响。
-- Roofline 负责选择排查方向，`rocprofv3` 和单变量实验负责找到更具体的原因。
-- 一页性能记录只需要环境、命令、结果、判断和下一步。
+- benchmark 先告诉你“哪个配置更慢”；`rocprofv3 --kernel-trace` 再告诉你“慢在哪个 dispatch”。
+- `linecross stride=32` 约为 2.25 ms，明显慢于连续访存版的 0.334 ms。
+- 当前 `linecross` 同时改变地址排布、每线程循环次数和 Grid Size，因此不能把 6.7 倍差距全部归因于访存合并。
+- 下一步应固定线程数和每线程工作量，只改变索引公式，再重新测量。
 
 ## 延伸阅读
 
-- [Roofline Model 原论文](https://dl.acm.org/doi/10.1145/1498765.1498785)
-- [ROCm Profiling Tools 总览](https://rocm.docs.amd.com/en/latest/conceptual/gpu-arch/rocm-tools.html)
+- [ROCprofiler 文档](https://rocm.docs.amd.com/projects/rocprofiler/en/latest/)
 - [HIP Performance Guidelines](https://rocm.docs.amd.com/projects/HIP/en/latest/how-to/performance_guidelines.html)
+- [GPUOpen：Memory Coalescing](https://gpuopen.com/learn/gcn-memory-coalescing/)

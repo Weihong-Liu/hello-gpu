@@ -32,3 +32,9 @@ rocm-core = { index = "rocm-amd" }
 rocm-smi-lib = { index = "rocm-amd" }
 torch = { index = "rocm-amd" }
 triton = { index = "rocm-amd" }
+
+[dependency-groups]
+notebook = [
+    "ipykernel>=7.3.0",
+    "jupyterlab>=4.6.2",
+]

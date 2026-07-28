@@ -1,304 +1,427 @@
 ---
-title: "第5章 用 rocprof 找到慢在哪里"
-description: "Hello GPU 第5章 · 对照两个 vector add，只看 kernel 时间、工作划分和 stride 趋势"
+title: "第5章 benchmark 与可信计时"
+description: "Hello GPU 第5章 · 热身、重复、GPU event、避免测量陷阱"
 ---
 
-# 第5章 用 rocprof 找到慢在哪里
+# 第5章 benchmark 与可信计时
 
 ## 本章导读
 
-> 本章只解决一个问题：**两个 vector add 实现速度差很多时，怎么先找到慢在哪个 kernel？**
+> 前面几章我们把环境、GPU 体系结构和第一个 vector add 程序串了起来，[第 4 章](../../part0-intro/chapter4/index.md)还用一次 baseline benchmark 建立了「算子离 Roofline 上限有多远」的直觉。从这一篇（Part 1 profiling 篇）开始，问题变成：怎么知道量出来的数字准不准、可不可信、会不会骗人？
 >
-> 我们会先用 benchmark 看差距，再用 `rocprofv3` 查看每次 kernel dispatch，最后扫描 `stride` 观察变化趋势。这个案例还会提醒你：命令行里只改一个参数，不代表 GPU 内部只改了一件事。读完后，你应该会定位慢点，也知道什么时候还不能急着下结论。
+> 本章先把镜头对准「量准」这件事本身。Latency、Throughput、Bandwidth、FLOPS 这些指标，memory-bound / compute-bound 这套判断语言，以及 Roofline 心智模型，[第 2–3 章](../../part0-intro/chapter2/index.md)和[第 4 章](../../part0-intro/chapter4/index.md)已经建立，本章不再重复——而是把它们底下那层更基础的东西讲清楚：一次 benchmark 怎样才算可信。读完后你应该能：解释为什么不能只跑一次就下结论；说明 warmup、repeat、synchronize 这些「无聊」的细节如何决定数字是否可信；用 GPU event 而不是 CPU wall clock 量出 kernel 的真实耗时；用一份检查清单避免常见的伪优化。
 
-本章代码在 `code/part1-profiling/chapter5/vector_add.hip`。下面的性能数据来自 **Radeon RX 9070 XT（gfx1201）+ ROCm 7.13 + 原生 Ubuntu 24.04**；换一张卡，数字会变，但操作顺序不变。
+[第 4 章](../../part0-intro/chapter4/index.md)你已经写过一个小 benchmark（`benchmark_vector_add.py`），里面用了 warmup、repeat 和 GPU event——但当时只是照着做。本章把每个步骤背后的「为什么」讲清楚。
 
-## 5.1 先看懂两个实现
+## 5.1 为什么不能凭感觉优化
 
-这一节先看两个 kernel 分别怎样把 `n` 个元素分给线程。它们的输出相同，但线程的工作划分并不相同。
+这一节先讲一个容易踩的坑：性能优化最怕的不是「没优化成功」，而是你以为自己优化成功了，其实只是测错了。
 
-### 5.1.1 连续访存版
+日常写业务代码时，凭感觉改一改有时还能工作；但 GPU 性能优化不太一样。GPU 程序通常是异步执行的，第一次运行可能包含初始化或编译开销，同一个输入规模下也可能因为后台负载、缓存状态、调度方式而波动。只看一次运行时间，很容易把偶然现象当成规律。
 
-普通 vector add 让线程 `i` 处理元素 `i`：
+很多刚开始做性能优化的同学，会直接问：「怎么把 GPU 跑满？」这个问题听上去很工程，但还不够具体。GPU 没跑满可能是数据没送到，可能是任务太碎，可能是测量本身不可靠，也可能它**确实**已经撞上了硬件天花板——只是你还不知道天花板在哪里。
 
-```cpp
-__global__ void kernel_coalesced(const float* a, const float* b,
-                                 float* c, int n) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) {
-        c[i] = a[i] + b[i];
-    }
-}
-```
+所以 Part 1 的第一步不是「马上优化」，而是先学会问更好的问题：我到底在测什么？这个数字可信吗？它说明瓶颈在哪一层？下一步应该收集什么证据？
 
-一个 wavefront 里的 lane 0、lane 1、lane 2 会依次访问 `a[0]`、`a[1]`、`a[2]`。这些地址连在一起，GPU 可以把多条线程请求合并成较少的内存事务。这就是**合并访存（Memory Coalescing）**。
+下面这张表列出几种常见的「直觉判断」与它们更值得追问的问题：
 
-这个版本每个线程只计算一个输出，因此一共启动约 `n` 个线程。
-
-### 5.1.2 linecross 版
-
-`linecross` 是本章给对照实现起的名字，不是 ROCm 的标准术语。它让每个 lane 处理一小段连续元素：
-
-```cpp
-int tile_base = wave_id * 32 * stride;
-int my_start = tile_base + lane * stride;
-for (int j = 0; j < stride; ++j) {
-    int i = my_start + j;
-    c[i] = a[i] + b[i];
-}
-```
-
-以 `stride=32` 为例，同一次循环中，各 lane 看到的地址大致是：
-
-```text
-lane 0  -> a[0]
-lane 1  -> a[32]
-lane 2  -> a[64]
-lane 3  -> a[96]
-...
-```
-
-相邻 lane 的起点隔了 32 个 float，也就是 128 字节。地址排布比连续访存版更分散。
-
-一个 wavefront 一共处理 `32 × stride` 个输出，所以 stride 变大时会同时发生两件事：
-
-1. 每个 lane 的循环次数增加；
-2. 需要启动的 wavefront 数减少。
-
-::: figure fig-coalesce-vs-linecross
-```mermaid
-flowchart TB
-    subgraph A[连续访存版]
-        A1[lane 地址相邻] --> A2[每个线程 1 个输出]
-        A2 --> A3[启动约 n 个线程]
-    end
-
-    subgraph B[linecross stride=32]
-        B1[lane 起点相隔 128 字节] --> B2[每个线程 32 个输出]
-        B2 --> B3[启动约 n / 32 个线程]
-    end
-```
-
-两个实现同时改变了地址排布和线程工作划分。
-:::
-
-如 @fig-coalesce-vs-linecross 所示，这不是一个“只改地址排布”的严格对照。它适合练习 benchmark 和 kernel trace，也能展示 stride 增大时的整体趋势；但仅凭这组数据，不能把全部性能差距都归因于访存合并。
-
-## 5.2 先跑一遍，确认谁更慢
-
-这一节先不打开 profiler，只用第 4 章的计时方法比较三个配置。
-
-从仓库根目录进入本篇环境并编译：
-
-```bash
-cd code/part1-profiling
-source ./activate-rocm.sh
-cd chapter5
-mkdir -p logs
-hipcc --offload-arch=gfx1201 -O3 vector_add.hip -o vector_add_bench
-```
-
-然后运行连续访存版，再把 `linecross` 的 stride 分别设为 1 和 32：
-
-```bash
-./vector_add_bench --kernel coalesced --size 16777216 --block 256 \
-    --warmup 20 --repeat 100 \
-    --output-json logs/coalesced_size16777216.json
-
-./vector_add_bench --kernel linecross --size 16777216 --block 256 --stride 1 \
-    --warmup 20 --repeat 100 \
-    --output-json logs/linecross_stride1_size16777216.json
-
-./vector_add_bench --kernel linecross --size 16777216 --block 256 --stride 32 \
-    --warmup 20 --repeat 100 \
-    --output-json logs/linecross_stride32_size16777216.json
-```
-
-先认识会影响本次对照的参数：
-
-| 参数 | 含义 |
-| ---- | ---- |
-| `--kernel` | 选择 `coalesced` 或 `linecross` |
-| `--size 16777216` | 处理 16M 个 float |
-| `--block 256` | 每个 block 启动 256 个线程 |
-| `--stride` | `linecross` 中每个 lane 负责多少个连续元素 |
-| `--warmup` / `--repeat` | 热身次数和正式计时次数 |
-| `--output-json` | 把本次参数和结果写入 JSON |
-
-程序会同时输出延迟和**有效带宽**。按算法口径，vector add 每个元素需要读 `a`、读 `b`、写 `c`，合计 12 B 有效数据，因此：
-
-```text
-有效带宽 = 12 × 元素个数 / kernel 时间
-```
-
-有效带宽是为了方便比较而换算出的数值，不等于硬件实际发出的 DRAM 事务量。
-
-在 9070XT 上得到的结果如下：
-
-| kernel | stride | 最短时间 | 有效带宽 | 正确性 |
-| ---- | ----: | ----: | ----: | :----: |
-| coalesced | - | 0.334 ms | 603 GB/s | OK |
-| linecross | 1 | 0.336 ms | 599 GB/s | OK |
-| linecross | 32 | 2.25 ms | 89.7 GB/s | OK |
-
-`linecross stride=1` 每个线程也只处理一个元素，线程数和连续访存版相同，因此两者时间接近。
-
-到了 `stride=32`，时间增加到 2.25 ms，约为连续访存版的 **6.7 倍**。现在可以确认这个配置更慢，但还不能确认是地址分散、wavefront 变少，还是两者共同造成。
-
-## 5.3 用 rocprof 看每次 kernel dispatch
-
-这一节只用 `rocprofv3` 的 kernel trace（核函数跟踪），不碰复杂计数器。GPU event 已经给出了计时结果，kernel trace 的新增价值是把每次 dispatch 单独列出来；以后面对包含很多 kernel 的程序，就能用它找到最慢的那一个。
-
-分别采集两个版本：
-
-```bash
-rocprofv3 --kernel-trace -o logs/final_kt_coalesced.csv -f csv \
-    -- ./vector_add_bench --kernel coalesced --size 16777216 --block 256 \
-       --warmup 5 --repeat 10
-
-rocprofv3 --kernel-trace -o logs/final_kt_linecross32.csv -f csv \
-    -- ./vector_add_bench --kernel linecross --size 16777216 --block 256 --stride 32 \
-       --warmup 5 --repeat 10
-```
-
-程序一共启动 15 次 kernel：前 5 次是 warmup，后 10 次才是正式结果。第一次打开生成的 CSV，先找下面几组列：
-
-| 列 | 先用它回答什么 |
-| ---- | ---- |
-| `Kernel_Name` | 到底运行了哪个 kernel |
-| `Start_Timestamp` / `End_Timestamp` | 单次 kernel 花了多久 |
-| `Grid_Size` | 一共启动了多少个 work-item |
-| `VGPR_Count` / `SGPR_Count` | kernel 的寄存器分配 |
-
-时间戳单位是纳秒：
-
-```text
-kernel 时间（μs）= (End_Timestamp - Start_Timestamp) / 1000
-```
-
-跳过最前面的 5 行 warmup，再统计后 10 行。这次运行得到：
-
-| kernel | 单次最短时间 | 中位数 | Grid Size | VGPR | SGPR |
-| ---- | ----: | ----: | ----: | ----: | ----: |
-| `kernel_coalesced` | 329 μs | 330 μs | 16 777 216 | 8 | 128 |
-| `kernel_linecross`（stride=32） | 2202 μs | 2304 μs | 524 288 | 16 | 128 |
-
-这个表先读出三件事：
-
-1. kernel trace 的 329 μs 和 benchmark 的 0.334 ms 基本一致，两种计时方法互相对得上；
-2. `kernel_linecross` 是更慢的 dispatch；
-3. 它的 Grid Size 只有连续访存版的 1/32，说明线程工作划分确实一起变了。
-
-这就是 kernel trace 的第一价值：**先把“程序慢”缩小成“某个 kernel 慢”，再看这个 kernel 的启动配置。**
-
-## 5.4 先列出一起变化的东西
-
-这一节不增加新工具，只检查实验到底同时改了哪些变量。
-
-从源码和 trace 可以列出：
-
-| 变化 | coalesced | linecross stride=32 |
+| 直觉判断 | 可能的问题 | 更好的追问 |
 | ---- | ---- | ---- |
-| 同时访问的地址 | 相邻 | 更分散 |
-| 每个线程处理的输出 | 1 个 | 32 个 |
-| Grid Size | 16 777 216 | 524 288 |
-| kernel 时间 | 0.334 ms | 2.25 ms |
+| GPU 利用率低，所以 kernel 写得差 | 可能是 CPU 调度慢、输入太小、数据搬运多，或者 GPU 一直在等任务 | GPU 到底在等什么？任务有没有持续送进去？ |
+| 改完代码以后快了一点 | 可能只是 warmup、缓存、后台负载或随机波动 | 重复测了吗？统计口径一样吗？ |
+| 单个算子快了，端到端就会快 | 这个算子可能只占总时间的一小部分 | 它在整条链路里占多少比例？ |
+| 平均时间下降了 | 可能尾延迟变差，或者波动变大 | median、min、p95、p99 有没有一起看？ |
+| GPU 时间很短，说明程序很快 | 可能只量到了 CPU 提交任务的时间，没有等 GPU 真正算完 | 计时前后有没有 synchronize？ |
+| fp16 比 fp32 快两倍 | 也许只是计算路径变了，访存没变 | 是真省了带宽，还是只在算力侧变快？ |
 
-::: figure fig-from-time-to-hypotheses
+这里先记住一句话：**没有稳定测量，就没有可靠优化。**
+
+如 @fig-measure-loop 所示，把「凭感觉改」换成「先测后改」的最小闭环，至少要包含五步：
+
+::: figure fig-measure-loop
 ```mermaid
 flowchart LR
-    A[linecross 更慢] --> B[地址排布变了]
-    A --> C[每线程循环次数变了]
-    A --> D[Grid Size 变了]
-    B --> E[需要新的公平对照]
-    C --> E
-    D --> E
+    A[感觉它很慢] --> B[定义要优化的指标]
+    B --> C[设计可信 benchmark]
+    C --> D[收集 profiling 证据]
+    D --> E[提出优化假设]
+    E --> F[只改一个变量]
+    F --> C
+    F --> G[结论可复查]
 ```
 
-一次改了多件事时，先不要急着把结果归给其中一件。
+从「感觉慢」到「可验证优化」的最小闭环
 :::
 
-如 @fig-from-time-to-hypotheses 所示，访存合并是一个合理方向，但并不是当前数据唯一支持的解释。有效带宽从 603 GB/s 降到 89.7 GB/s，也只是同一份时间结果换成了带宽单位，不能算第二份独立测量。
+如 @fig-measure-loop 所示，优化不是从改代码开始，而是从定义问题和设计测量开始。否则你很容易进入一种状态：代码改了很多，数字也变了，但没人知道到底是哪一步起作用。
 
-## 5.5 看看静态资源有没有变
+这也是为什么本书反复强调一条工作节奏：先理解硬件和系统，再量准时间，再找到慢点，最后只改一个变量做验证。Part 1（profiling 篇）就是在练习这条路线。本章先把「怎么量准」讲清楚，[下一章](../chapter6/index.md) 会用两个 vector add 版本，把 benchmark 和 `rocprofv3` 接起来。
 
-这一节检查 VGPR、SGPR 和 LDS。Occupancy（占用率）在这里可以先简单理解成“GPU 能同时保留多少个 wavefront 轮流工作”。
+## 5.2 热身与缓存效应
 
-`linecross stride=1` 和 `linecross stride=32` 执行的是同一个编译后的 kernel。stride 是运行时参数，因此两种配置的静态资源分配相同：
+这一节解释 benchmark 里最常见的一个现象：**第一次总是特别慢**，以及为什么正式计时前要先丢掉前几次。
 
-| 资源 | linecross stride=1 | linecross stride=32 |
-| ---- | ----: | ----: |
-| VGPR | 16 | 16 |
-| SGPR | 128 | 128 |
-| LDS | 0 | 0 |
+GPU 程序的「首轮开销」通常来自三件事：
 
-这说明寄存器和 LDS 分配不是两个 stride 配置之间的变量。不过，stride 仍然改变了每个线程的循环次数和 Grid Size，所以还不能把剩余差距全部交给访存合并解释。
+1. **编译 / JIT**：第一次启动某个 kernel 时，驱动或框架可能还要做最终编译、链接、内核选择（Triton autotune、rocBLAS 的 kernel 选择都在这一步发生）；
+2. **缓存准备**：第一次访存时 L2、页表、TLB 都是冷的，数据要真正从显存搬进来；
+3. **时钟爬升**：GPU 的实际工作频率可能从空闲状态逐步爬升到标称频率，前几次还没爬满。
 
-这一节的结论很窄：**静态资源没变，但工作划分变了。**
+如果直接拿第一次的时间当成绩，你量到的多半是这些一次性开销，而不是 kernel 真正的稳态性能。这就是为什么检查清单里有一条「区分初始化和正式计时」：**首轮要单独记录，不要混进统计**。
 
-## 5.6 用 stride 扫描观察趋势
+更隐蔽的是缓存带来的「伪提升」：第二次运行同一个输入往往比第一次快很多，原因只是数据已经被 L2 / GDDR6 预热，而不是你的代码变好了。这会制造一种很强的错觉——「我什么都没改，它就快了」。
 
-这一节扫描 `stride`，观察这个 `linecross` 实现的整体性能怎样变化。
-
-```bash
-for s in 1 2 4 8 16 32 64 128 256; do
-    ./vector_add_bench --kernel linecross --size 16777216 --block 256 --stride $s \
-        --warmup 20 --repeat 50 \
-        --output-json logs/linecross_s${s}.json
-done
+::: figure fig-warmup-cache
+```mermaid
+flowchart LR
+    A[第 1 次<br/>编译 + 冷缓存 + 爬频] --> B[第 2-3 次<br/>缓存渐热]
+    B --> C[warmup 后<br/>稳态]
+    C -.正式计时从这开始.-> D[repeat N 次]
 ```
 
-下面摘出几个代表值：
+首轮的一次性开销会在 warmup 后消失，正式计时只看稳态段
+:::
 
-| stride | 最短时间 | 有效带宽 | 相对 stride=1 耗时 |
-| ----: | ----: | ----: | ----: |
-| 1 | 0.338 ms | 596 GB/s | 1.00× |
-| 8 | 0.405 ms | 497 GB/s | 1.20× |
-| 16 | 1.65 ms | 122 GB/s | 4.89× |
-| 32 | 2.19 ms | 92.1 GB/s | 6.47× |
-| 64 | 4.86 ms | 41.4 GB/s | 14.4× |
-| 256 | 25.3 ms | 7.95 GB/s | 74.9× |
+应对方法很直接：
 
-可以直接观察到：stride 整体越大，这个实现越慢。但一个命令行参数同时改变了地址跨度、每线程循环次数和 Grid Size，所以这条曲线描述的是**组合效果**，不是单独的 cache line 或合并访存曲线。
+- **warmup**：正式计时前先空跑若干次（经验上至少 5~20 次），让 JIT、cache、时钟进入稳定状态；
+- **按工作集大小分级测试**：当输入 footprint 接近 L2 容量时，缓存命中会让数字异常好看——这时要换多个 footprint 看趋势，而不是只跑一个 size；
+- **首轮单独留档**：如果首轮特别慢，把它作为「初始化成本」单独记下来，正式统计前扔掉。
 
-要单独验证访存合并，下一组实验需要固定三件事：
+> 一个常被忽略的细节：warmup 之后**也要 synchronize**，否则 warmup 的任务可能还没真正在 GPU 上跑完，计时起点就被污染了。
 
-1. 启动相同数量的线程和 wavefront；
-2. 每个线程执行相同次数的循环和加法；
-3. 只改变循环里的索引公式，让一版地址相邻、另一版地址分散。
+## 5.3 重复运行与统计
 
-例如，两版都让每个 lane 处理 32 个元素，只改变访问顺序：
+这一节讲为什么「跑一次」永远不够，以及拿到一组时间后该怎么汇总。
+
+单次结果可能只是偶然：一次后台任务、一次调度抖动、一次缓存命中，都足以让数字漂移。所以可信 benchmark 的第二个支柱是 **repeat（重复多次）**，并对这组时间做统计汇总，而不是只挑一个数字报告。
+
+一个最小 benchmark 的流程可以写成：
 
 ```text
-连续版：i = tile_base + j * 32 + lane
-分散版：i = tile_base + lane * 32 + j
+准备固定输入
+记录硬件、软件版本和参数
+运行若干次 warmup
+等待设备完成
+重复计时多次
+每次计时都确保测量范围一致
+汇总 mean / median / min / 波动
+保存原始输出和结论
 ```
 
-这才是后续应该补跑的公平对照。在这组新数据产生之前，本章停在“找到慢 kernel，并发现实验同时改变了多个底层变量”这个结论上。
+`mean`、`median`、`min` 这几个统计量各有用处：
 
-::: figure fig-profiling-loop
-```mermaid
-flowchart LR
-    A[benchmark<br/>确认差距] --> B[kernel trace<br/>找到慢 dispatch]
-    B --> C[列出所有变化变量]
-    C --> D[设计公平对照]
-    D --> E[再决定优化方向]
+- **mean**：平均值，容易受异常慢的一次影响；
+- **median**：中位数，更能代表多数情况下的表现；
+- **min**：最好的一次，常用来观察较少受外部干扰时的能力（估算带宽 / 算力上限时常以 min 为分母）；
+- **波动范围 / std / p95 / p99**：告诉你这个 benchmark 是否稳定，以及尾延迟有多差。
+
+不要只相信一个数字。**一个 benchmark 如果波动很大，你应该先修测量方法，而不是急着优化代码。** 具体来说，看到「改完只快了一点点」时，先问：repeat 够吗？median 和 std 怎么变？是不是落在了正常波动范围内？
+
+[第 4 章](../../part0-intro/chapter4/index.md)的 `benchmark_vector_add.py` 里 `repeat=30` 就是为了让你拿到一串时间、再看 median / min 而不是单次值——本章只是把那个做法背后的道理讲清楚。
+
+## 5.4 GPU event 计时
+
+这一节讲本章最关键的技术细节：**为什么不能用 `time.time()` / wall clock 量 kernel，而要用 GPU event**。
+
+GPU 任务通常是**异步提交**的：你在 host 端调用 `torch.softmax(x)` 或 `kernel<<<...>>>()` 时，CPU 只是把命令塞进队列就立刻返回了，kernel 真正执行完可能还要等一会儿。如果你用 `time.time()` 在调用前后取差，量到的多半是「CPU 把命令塞进队列花了多久」，而不是「GPU 算了多久」——这就是直觉表里「GPU 时间很短，说明程序很快」那条坑的来源。
+
+正确的做法是用 GPU 自己的计时机制，在设备时间线上打两个事件，再算它们之间的间隔。下面三段骨架分别对应 PyTorch、Triton、HIP 三种最常见的入口，演示的就是这套「warmup → record event → repeat → synchronize → elapsed」的最小流程。脚本与日志会落在 `code/part1-profiling/chapter5/`。
+
+### 骨架 A：PyTorch 端到端 op 计时
+
+最常见的入口：你想知道 `torch.nn.functional.softmax(x)` 在某个 shape 上有多快。
+
+<details>
+<summary>代码骨架：bench_torch_op.py</summary>
+
+```python
+# code/part1-profiling/chapter5/bench_torch_op.py
+# 用法：python bench_torch_op.py --shape 4096,4096 --dtype fp16 --repeats 200
+# 目标：演示一个可信的 PyTorch 算子 benchmark（示例算子可换成任意 op）
+# 硬件上下文：Radeon RX 9070 XT + ROCm 7.13（实测见下方 §5.4 结果表）
+import argparse
+import statistics
+import torch
+
+
+def bench(shape, dtype, repeats=200, warmup=20):
+    x = torch.randn(*shape, dtype=dtype, device="cuda")
+
+    # warmup：让 JIT、cache、clock 进入稳定状态
+    for _ in range(warmup):
+        torch.softmax(x, dim=-1)
+    torch.cuda.synchronize()
+
+    # 用 GPU event 计时，不要用 time.time()
+    start = [torch.cuda.Event(enable_timing=True) for _ in range(repeats)]
+    end   = [torch.cuda.Event(enable_timing=True) for _ in range(repeats)]
+    for i in range(repeats):
+        start[i].record()
+        torch.softmax(x, dim=-1)
+        end[i].record()
+    torch.cuda.synchronize()
+
+    times_ms = [s.elapsed_time(e) for s, e in zip(start, end)]
+    return {
+        "mean":   statistics.mean(times_ms),
+        "median": statistics.median(times_ms),
+        "min":    min(times_ms),
+        "p95":    sorted(times_ms)[int(len(times_ms) * 0.95)],
+        "std":    statistics.pstdev(times_ms),
+    }
+
+
+if __name__ == "__main__":
+    p = argparse.ArgumentParser()
+    p.add_argument("--shape", default="4096,4096")
+    p.add_argument("--dtype", default="fp16", choices=["fp16", "bf16", "fp32"])
+    p.add_argument("--repeats", type=int, default=200)
+    args = p.parse_args()
+
+    shape = tuple(int(x) for x in args.shape.split(","))
+    dtype = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp32": torch.float32}[args.dtype]
+
+    stats = bench(shape, dtype, args.repeats)
+    print(f"shape={shape} dtype={args.dtype} stats={stats}")
 ```
 
-本章走完的最小 profiling 路线。
-:::
+</details>
 
-如 @fig-profiling-loop 所示，profiler 不会自动替你证明原因。它先帮你找到慢点；真正解释原因，还需要源码检查和公平对照。下一章会把当前两个配置的实测结果放到 Roofline 图上，练习怎样描述工作点的位置。
+要点：
+
+- 用 `torch.cuda.Event` 而不是 `time.time()`——前者计的是 GPU 时间，后者会被异步 launch 误导；
+- warmup 至少 20 次，并在 warmup 后 `synchronize`；
+- 同时输出 mean / median / min / p95 / std，单一数字不够。
+
+### 骨架 B：Triton kernel 计时与有效带宽
+
+针对单个 kernel 的 micro-benchmark，重点是**用 bytes / ops 估算反推有效带宽或算力**，再和硬件峰值比较，判断「离极限多远」。
+
+<details>
+<summary>代码骨架：bench_triton_copy.py</summary>
+
+```python
+# code/part1-profiling/chapter5/bench_triton_copy.py
+# 用法：python bench_triton_copy.py --n 16777216 --repeats 200
+# 目标：用最简单的 copy kernel 验证 benchmark 流程，并估算有效带宽
+# 硬件上下文：Radeon RX 9070 XT + ROCm 7.13（实测见下方 §5.4 结果表）
+import argparse
+import torch
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def copy_kernel(x_ptr, y_ptr, n, BLOCK: tl.constexpr):
+    pid = tl.program_id(0)
+    offs = pid * BLOCK + tl.arange(0, BLOCK)
+    mask = offs < n
+    tl.store(y_ptr + offs, tl.load(x_ptr + offs, mask=mask), mask=mask)
+
+
+def bench(n, repeats=200, warmup=20, block=1024):
+    x = torch.empty(n, dtype=torch.float32, device="cuda")
+    y = torch.empty_like(x)
+    grid = ((n + block - 1) // block,)
+
+    for _ in range(warmup):
+        copy_kernel[grid](x, y, n, BLOCK=block)
+    torch.cuda.synchronize()
+
+    s = torch.cuda.Event(enable_timing=True)
+    e = torch.cuda.Event(enable_timing=True)
+    s.record()
+    for _ in range(repeats):
+        copy_kernel[grid](x, y, n, BLOCK=block)
+    e.record()
+    torch.cuda.synchronize()
+    ms = s.elapsed_time(e)
+
+    # 每次迭代搬运 2 * n * 4 字节（一读一写 fp32）
+    total_bytes = 2 * n * 4 * repeats
+    eff_bw = total_bytes / (ms * 1e-3) / 1e9   # GB/s
+    return ms, eff_bw
+
+
+if __name__ == "__main__":
+    p = argparse.ArgumentParser()
+    p.add_argument("--n", type=int, default=1 << 24)
+    p.add_argument("--repeats", type=int, default=200)
+    args = p.parse_args()
+    ms, gbps = bench(args.n, args.repeats)
+    print(f"n={args.n} time={ms:.3f} ms eff_bw={gbps:.2f} GB/s")
+```
+
+</details>
+
+要点：
+
+- **用一个公式把时间换算成 BW（或 TFLOPS）**——单看时间没法判断「离峰值多远」；
+- 当 `n` 远大于 L2 容量时，eff_bw 应该逼近 GDDR6 实测带宽，否则 benchmark 流程本身有问题；
+- 同样的骨架可以替换 kernel 来测 GEMM、softmax 等，只要把「搬运 bytes / 计算 ops」的公式换掉。
+
+### 骨架 C：HIP event 计时
+
+有时你需要绕过 Python 直接量 HIP kernel——它对应的最小 benchmark 骨架是这样的：
+
+<details>
+<summary>代码骨架：bench_hip.cpp</summary>
+
+```cpp
+// code/part1-profiling/chapter5/bench_hip.cpp
+// 用法：hipcc -O3 bench_hip.cpp -o bench_hip && ./bench_hip
+// 目标：HIP event 最小计时模板
+// 硬件上下文：Radeon RX 9070 XT + ROCm 7.13（实测见下方 §5.4 结果表）
+#include <hip/hip_runtime.h>
+#include <cstdio>
+
+__global__ void my_kernel(float* x, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) x[i] = x[i] * 2.0f + 1.0f;
+}
+
+int main() {
+    const int n = 1 << 24;
+    const int warmup = 20, repeats = 200;
+    float* d;
+    hipMalloc(&d, n * sizeof(float));
+
+    int block = 256;
+    int grid  = (n + block - 1) / block;
+
+    for (int i = 0; i < warmup; ++i)
+        my_kernel<<<grid, block>>>(d, n);
+    hipDeviceSynchronize();
+
+    hipEvent_t s, e;
+    hipEventCreate(&s); hipEventCreate(&e);
+    hipEventRecord(s);
+    for (int i = 0; i < repeats; ++i)
+        my_kernel<<<grid, block>>>(d, n);
+    hipEventRecord(e);
+    hipEventSynchronize(e);
+
+    float ms = 0.f;
+    hipEventElapsedTime(&ms, s, e);
+    printf("avg per launch = %.4f ms\n", ms / repeats);
+
+    hipFree(d);
+    return 0;
+}
+```
+
+</details>
+
+要点：
+
+- `hipEvent_t` 的精度足够量到 μs 级 kernel；
+- 一定要 `hipEventSynchronize` 之后再读 elapsed time，否则 host 还在拿着 stale 值；
+- [第 6 章](../chapter6/index.md) 会沿用这个计时骨架，再用 `rocprofv3` 核对 kernel 时间。
+
+### 实测数字（Radeon RX 9070 XT + ROCm 7.13）
+
+下面这张表是用 [`bench_ch4.py`](https://github.com/datawhalechina/hello-gpu/blob/dev/code/part1-profiling/chapter5/bench_ch4.py)（综合了上面骨架 A / B 两段流程）在 9070XT（gfx1201 / ROCm 7.13 / 原生 Ubuntu 24.04）上跑出来的实测值：
+
+<details>
+<summary>实测输出：Ch4 benchmark @ 9070XT + ROCm 7.13（原生 Ubuntu 24.04）</summary>
+
+下表是用 `bench_ch4.py` 在 9070XT（gfx1201 / ROCm 7.13 / 原生 Ubuntu 24.04）上的实测值：
+
+| 实验 | 算子 / 公式 | shape / dtype | 时延（median / min） | 有效带宽 | 算术强度 |
+| ---- | ---- | ---- | ----: | ----: | ----: |
+| 骨架 A — PyTorch vector add | `c = a + b` | 4096² / fp32 | 0.337 / 0.335 ms | 600.8 GB/s | ~0.083 FLOP/B |
+| 骨架 A — PyTorch vector add | `c = a + b` | 4096² / fp16 | 0.173 / 0.171 ms | 587.3 GB/s | ~0.17 FLOP/B |
+| 骨架 B — Triton vector copy | `y = x` | 8 MiB（pair） | 0.020 ms（min） | 785.1 GB/s | — |
+| 骨架 B — Triton vector copy | `y = x` | 64 MiB（pair） | 0.223 ms（min） | 572.8 GB/s | — |
+| 骨架 B — Triton vector copy | `y = x` | 256 MiB（pair） | 0.900 ms（min） | 568.6 GB/s | — |
+
+```text
+GPU: AMD Radeon RX 9070 XT
+torch: 2.11.0+rocm7.13.0
+hipcc: 7.13.99004 / arch gfx1201 / 原生 Ubuntu 24.04 (6.17.0-35-generic)
+
+--- 骨架 A：PyTorch vector add (4096×4096) ---
+ dtype |    min_ms |  median_ms |     GB/s
+  fp32 |   0.335 ms |    0.337 ms |   600.8
+  fp16 |   0.171 ms |    0.173 ms |   587.3
+
+--- 骨架 B：Triton vector copy (float32) ---
+   footprint |    min_ms |     GB/s
+        8 MiB |   0.020 ms |   785.1
+       64 MiB |   0.223 ms |   572.8
+      256 MiB |   0.900 ms |   568.6
+```
+
+> 时延口径：vector add 用 GPU event 逐次计时，同时报告 min 与 median；vector copy 用「一段 event 覆盖 200 次连续 launch 后求平均」，列出的就是单次平均（≈ min）。原始日志见 `code/part1-profiling/chapter5/logs/`。有效带宽的口径：vector add 按 `3 × elems × dtype` 字节（两读一写），vector copy 按 `2 × footprint` 字节（一读一写）。
+
+</details>
+
+读这张表的关键点：
+
+- **memory-bound 算子的「快」上限就是带宽**：vector add 在 fp32 / fp16 下有效带宽几乎一致（600.8 vs 587.3 GB/s），但 fp16 的时间只有 fp32 的约一半（0.171 vs 0.335 ms）——这正是直觉表里「改 dtype 之后吞吐翻倍 ≠ 真省了带宽」那条的实测印证。fp16 真省到的是 byte 数，算术强度（FLOP/B）跟着翻倍。
+- **vector copy 的 footprint 扫描能画出 cache 层级**：8 MiB 时有效带宽冲到 785.1 GB/s（落在 L2 命中区，数据基本没往返 GDDR6），64 MiB 以后跌到 ~570 GB/s 并稳定下来——这就是踩进 GDDR6 平台后的真实带宽。这条曲线就是后面所有 memory-bound 算子要参照的带宽线。
+
+> 太小的输入（几 MiB 以下）测出来的不是带宽峰值，是 launch overhead——每次 copy 真正干活只有几 μs，被启动开销稀释。太大的输入又只能看到 GDDR6 平台。要看 cache 层级必须跑 footprint 扫描，而不是只跑一个 size。
+
+> 三段骨架本身只是流程模板；实测数字请按[第 4 章 4.5 节](../../part0-intro/chapter4/index.md)的实验底稿习惯，落到 `code/part1-profiling/chapter5/` 下的记录里，写清楚硬件、命令、原始输出和结论，几天后回来才复现得了。
+
+## 5.5 避免测量陷阱
+
+这一节专门讲「看起来变快了，但其实不一定」的情况——也就是常说的**伪优化**。伪优化最麻烦的地方在于，它会给你一种很强的成就感：数字变好了，代码也改了，好像问题解决了。但如果测量方式不可靠，后面换输入、换机器、换版本时，结果很可能消失。
+
+下面这张表把常见伪优化来源和应对方式整理在一起：
+
+| 现象 | 可能原因 | 应对方式 |
+| ---- | ---- | ---- |
+| 第一次很慢，后面明显变快 | 首轮包含初始化、编译、缓存准备 | 单独记录首轮，正式统计前 warmup |
+| 改完只快了一点 | 可能是正常波动 | 增加 repeat，看 median 和 std |
+| GPU 计时几乎为零 | 没有等待 GPU 完成 | 使用 GPU event 或显式 synchronize |
+| 小输入特别快 | 可能主要测到 launch overhead 或缓存效果 | 用多个输入规模观察趋势 |
+| 单个 kernel 快了，但端到端没变化 | 瓶颈不在这个 kernel | 先看它在总耗时中占比 |
+| 前后版本差异很大 | 同时改了多个变量 | 一次只改一个变量，保留对照组 |
+| 带宽或 FLOPS 看起来异常高 | 数据量模型或计时范围不一致 | 重新核对 bytes / ops 的估算口径 |
+| 改 dtype 之后吞吐翻倍 | 可能只是 Tensor 数量变了一半 | 把 byte 数和 ops 数都重新算 |
+| 关掉某个 print / log 后变慢 | 可能 print 把 host 卡住，意外起到了同步效果 | 计时范围要明确包含或排除日志 |
+| 第二次运行就一直很快 | 数据已被 L2 / GDDR6 预热 | 在 footprint 接近 cache 容量时，按工作集大小分级测试 |
+
+避免伪优化的核心方法也很简单：**让实验可复查。**
+
+一次好的性能实验，至少应该留下：输入规模、数据类型、硬件和软件版本、运行命令、原始输出、统计方式、结论。这样几天以后你再回来，或者别人帮你 review 时，才知道这个数字到底从哪里来——这正是[第 4 章 4.5 节](../../part0-intro/chapter4/index.md)强调的实验底稿习惯。
+
+如果你现在只记住一条，那就是：**优化前先建立可信 baseline。** 没有 baseline，后面所有「更快了」都没有参照物。
+
+## 5.6 可信 benchmark 的检查清单
+
+这一节把前面几节的要点收成一份清单——每次开一组实验前过一遍，能挡掉大部分伪优化。
+
+| 检查项 | 为什么重要 | 常见错误 |
+| ---- | ---- | ---- |
+| 固定输入规模 | 输入变了，时间自然会变 | 前后对比时 shape 不一致 |
+| 固定数据类型 | fp32、fp16、bf16 的计算路径不同 | 只说「快了」，不说 dtype |
+| 区分初始化和正式计时 | 第一次运行可能包含加载、编译、缓存准备 | 把首轮初始化当成稳定性能 |
+| warmup | 让缓存、JIT、设备状态进入稳定状态 | 第一轮特别慢，直接拿来平均 |
+| repeat | 单次结果可能只是偶然 | 只跑一次就下结论 |
+| synchronize | GPU 任务常常异步提交 | 只量到 CPU 提交时间 |
+| 计时器选择 | wall clock vs GPU event 精度差异大 | 用 `time.time()` 量微秒级 kernel |
+| 锁定时钟 / 后台干扰 | 频率波动会污染数据 | 后台跑着别的 GPU 任务 |
+| 记录环境 | 后续复查需要硬件、驱动、框架版本 | 只有一个数字，没有上下文 |
+| 只改一个变量 | 才知道是谁带来变化 | 同时改 shape、dtype、实现和参数 |
+
+把这张表和 4.4 的三段骨架配合起来用：骨架管「怎么测」，清单管「测得对不对」。两者都到位，一次 benchmark 才值得相信。
 
 ## 本章小结
 
-- benchmark 先告诉你“哪个配置更慢”；`rocprofv3 --kernel-trace` 再告诉你“慢在哪个 dispatch”。
-- `linecross stride=32` 约为 2.25 ms，明显慢于连续访存版的 0.334 ms。
-- 当前 `linecross` 同时改变地址排布、每线程循环次数和 Grid Size，因此不能把 6.7 倍差距全部归因于访存合并。
-- 下一步应固定线程数和每线程工作量，只改变索引公式，再重新测量。
+- 性能优化不是从改代码开始，而是从定义问题和设计测量开始；**没有稳定测量，就没有可靠优化**。
+- 首轮的一次性开销（编译、冷缓存、爬频）要在 warmup 里消掉；正式统计只看稳态段，warmup 之后记得 synchronize。
+- 单次结果不可信，要 repeat 多次并汇总 mean / median / min / p95 / std；波动大时先修测量方法，而不是急着优化代码。
+- GPU 任务是异步提交的，必须用 GPU event（`torch.cuda.Event` / `hipEvent_t`）而不是 `time.time()` 量 kernel 真实耗时；本章给出 PyTorch / Triton / HIP 三段最小骨架。
+- 伪优化有很多伪装（缓存命中、launch overhead、改 dtype 只省了 byte、print 意外同步……），核心对策是「让实验可复查」和「先建立可信 baseline」。
+- [下一章](../chapter6/index.md) 会用两个 vector add 版本，把本章的 benchmark 流程和 `rocprofv3` 串成「量准 → 找到慢点 → 验证」的完整路线。
 
 ## 延伸阅读
 
-- [ROCprofiler 文档](https://rocm.docs.amd.com/projects/rocprofiler/en/latest/)
 - [HIP Performance Guidelines](https://rocm.docs.amd.com/projects/HIP/en/latest/how-to/performance_guidelines.html)
-- [GPUOpen：Memory Coalescing](https://gpuopen.com/learn/gcn-memory-coalescing/)
+- [HIP Programming Guide](https://rocm.docs.amd.com/projects/HIP/en/latest/) — HIP 编程模型与计时 API 入口
+- [PyTorch Profiler 文档](https://docs.pytorch.org/docs/stable/profiler.html)
+- [ROCm Documentation](https://rocm.docs.amd.com/)

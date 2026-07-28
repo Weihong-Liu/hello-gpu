@@ -3,76 +3,79 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PART_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+VENV_DIR="${PART_DIR}/.venv"
 GPU_ARCH="${GPU_ARCH:-gfx1201}"
-M="${M:-512}"
-N="${N:-512}"
-K="${K:-512}"
-WARMUP="${WARMUP:-5}"
-REPEAT="${REPEAT:-20}"
+ROWS="${ROWS:-4096}"
+COLS="${COLS:-1024}"
+HIP_BLOCK="${HIP_BLOCK:-256}"
+WARMUP="${WARMUP:-10}"
+REPEAT="${REPEAT:-50}"
 SEED="${SEED:-20260719}"
 RUN_EDGE_CASES="${RUN_EDGE_CASES:-1}"
-BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hello-gpu-ch10.XXXXXX")"
-HIP_BINARY="${BUILD_DIR}/matmul_hip"
+BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hello-gpu-ch9.XXXXXX")"
+HIP_BINARY="${BUILD_DIR}/softmax_hip"
 
 cleanup() {
     rm -rf "${BUILD_DIR}"
 }
 trap cleanup EXIT
 
-if [[ ! -f "${PART_DIR}/.venv/bin/activate" ]]; then
-    echo "missing ${PART_DIR}/.venv; run 'uv sync' in ${PART_DIR} first" >&2
+# activate-rocm.sh activates ../.venv and exposes the ROCm SDK installed in it.
+if [[ ! -f "${VENV_DIR}/bin/activate" ]]; then
+    echo "missing ${VENV_DIR}; run 'uv sync' in ${PART_DIR}" >&2
     exit 1
 fi
 if [[ ! -f "${PART_DIR}/activate-rocm.sh" ]]; then
     echo "missing ${PART_DIR}/activate-rocm.sh" >&2
     exit 1
 fi
-
-# The helper activates ../.venv and exposes the ROCm SDK binaries/libraries.
 # shellcheck source=/dev/null
 source "${PART_DIR}/activate-rocm.sh"
 
-echo "[build] HIP FP32 matmul for ${GPU_ARCH}"
 hipcc \
     --offload-arch="${GPU_ARCH}" \
     -O3 \
     -std=c++17 \
-    "${SCRIPT_DIR}/matmul_hip.hip" \
+    "${SCRIPT_DIR}/softmax_hip.hip" \
     -o "${HIP_BINARY}"
 
+run_shape() {
+    local rows="$1"
+    local columns="$2"
+    local warmup="$3"
+    local repeat="$4"
+
+    echo "RUN shape=${rows}x${columns} warmup=${warmup} repeat=${repeat}"
+    "${HIP_BINARY}" \
+        --version all \
+        --rows "${rows}" \
+        --cols "${columns}" \
+        --block "${HIP_BLOCK}" \
+        --warmup "${warmup}" \
+        --repeat "${repeat}" \
+        --seed "${SEED}"
+
+    python "${SCRIPT_DIR}/softmax_triton.py" \
+        --version all \
+        --rows "${rows}" \
+        --cols "${columns}" \
+        --warmup "${warmup}" \
+        --repeat "${repeat}" \
+        --seed "${SEED}"
+}
+
 if [[ "${RUN_EDGE_CASES}" == "1" ]]; then
-    echo "[check] non-square and non-divisible boundary shapes"
-    edge_shapes=(
-        "1 1 1"
-        "3 5 7"
-        "15 17 19"
-        "17 19 23"
-        "31 33 29"
-    )
-    for shape in "${edge_shapes[@]}"; do
-        read -r edge_m edge_n edge_k <<< "${shape}"
-        echo "[check] M=${edge_m} N=${edge_n} K=${edge_k}"
-        "${HIP_BINARY}" \
-            --version all \
-            --m "${edge_m}" --n "${edge_n}" --k "${edge_k}" \
-            --warmup 0 --repeat 1 --seed "${SEED}"
-        python "${SCRIPT_DIR}/matmul_triton.py" \
-            --version all \
-            --m "${edge_m}" --n "${edge_n}" --k "${edge_k}" \
-            --warmup 0 --repeat 1 --seed "${SEED}"
-    done
+    # One element, wave boundaries, non-power-of-two columns, and a block tail.
+    while read -r edge_rows edge_cols; do
+        run_shape "${edge_rows}" "${edge_cols}" 0 1
+    done <<'SHAPES'
+1 1
+2 31
+3 32
+4 33
+2 255
+3 257
+SHAPES
 fi
 
-echo "[benchmark] HIP M=${M} N=${N} K=${K}"
-"${HIP_BINARY}" \
-    --version all \
-    --m "${M}" --n "${N}" --k "${K}" \
-    --warmup "${WARMUP}" --repeat "${REPEAT}" --seed "${SEED}"
-
-echo "[benchmark] PyTorch/Triton M=${M} N=${N} K=${K}"
-python "${SCRIPT_DIR}/matmul_triton.py" \
-    --version all \
-    --m "${M}" --n "${N}" --k "${K}" \
-    --warmup "${WARMUP}" --repeat "${REPEAT}" --seed "${SEED}"
-
-echo "Chapter 10 run completed. Record the output together with the machine state."
+run_shape "${ROWS}" "${COLS}" "${WARMUP}" "${REPEAT}"

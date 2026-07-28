@@ -253,7 +253,7 @@ $ amd-smi monitor
 （同样报错，依赖 amdgpu 内核模块）
 ```
 
-原因：WSL2 通过 `/dev/dxg`（不是 Linux 原生的 `amdgpu` 驱动）暴露 GPU，`rocm-smi` 和 `amd-smi` 都依赖 `amdgpu` 内核模块读硬件状态，WSL2 里没有这个模块。同样受影响的还有 `rocprofv3 --pmc` 的硬件计数器（依赖 KFD，见 [第 5 章 §5.3](../../part1-profiling/chapter5/index.md)）。
+原因：WSL2 通过 `/dev/dxg`（不是 Linux 原生的 `amdgpu` 驱动）暴露 GPU，`rocm-smi` 和 `amd-smi` 都依赖 `amdgpu` 内核模块读硬件状态，WSL2 里没有这个模块。同样受影响的还有 `rocprofv3 --pmc` 的硬件计数器（依赖 KFD，见 [第 6 章 §6.3](../../part1-profiling/chapter6/index.md)）。
 
 所以本章**只用 `rocminfo`** 这一个工具作为必需验证项——它不依赖 `amdgpu` / `rocm-smi` 那条状态监控路径，WSL2 上也能跑。
 

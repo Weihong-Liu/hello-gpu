@@ -38,35 +38,42 @@ export const parts = [
         ]
       },
       {
-        title: 'GPU 体系结构：Kernel 执行旅程',
-        summary: '跟随一次 HIP Kernel 从 launch 到 wavefront、WGP/CU/SIMD、EXEC、片上资源、GDDR6 与 gfx12 WMMA',
+        title: 'GPU 体系结构（上）：编程模型与波前执行',
+        summary: 'grid/workgroup/wavefront/lane 的工作划分，WGP/CU/SIMD 落点，EXEC 掩码与分支发散',
         status: '✅',
-        lead: '本章跟随一次 HIP kernel 的执行旅程：从 host launch 到 workgroup、wavefront、WGP/CU/SIMD 和 EXEC，再到 VGPR、SGPR、LDS、缓存、GDDR6 与 gfx12 WMMA。读完后，你应该能把硬件术语放回同一条路径，并用受控实验区分可迁移的优化方法与需要重测的结果。',
+        lead: '本章跟着一次 kernel 提交走一遍，建立贯穿全书的两层视角：软件怎么划分（grid → workgroup → wavefront → lane），以及硬件怎么执行（落到 WGP/CU/SIMD，按波前步调一致地推进，遇到分支用 EXEC 掩码决定谁在干活）。这是后面一切算子优化的地基。',
         sections: [
-          ['第一站：从 Kernel launch 到 workgroup', '从 grid、block 与全局下标建立工作划分，并区分软件 workgroup 与物理调度位置。'],
-          ['第二站：workgroup 怎样拆成 wavefront', '用 wave32/wave64 和当前实验的 256-thread block 理解 lane 分组、尾部与分支边界。'],
-          ['第三站：wavefront 怎样落到 WGP、CU 和 SIMD', '按 LLVM 的 CU/WGP execution mode 解释 placement，不把 WGP 固定泛化为特定 CU/SIMD 拓扑。'],
-          ['第四站：分支、EXEC mask 与有效 lane', '用 EXEC 的有效 lane 集合理解 divergent control flow，并用受控谓词实验限定其代价结论。'],
-          ['第五站：VGPR、SGPR、LDS 与驻留资源', '将寄存器、LDS、scratch 与 workgroup shape 放入 residency 和延迟隐藏的资源约束。'],
-          ['第六站：从片上资源到 GDDR6 的数据旅程', '区分 `gfx1201` 的缓存/显存规格、逻辑算法字节和需要计数器验证的物理流量。'],
-          ['第七站：全局内存访问怎样浪费带宽', '通过只改变读取 stride 的 HIP 对照，观察 lane 地址排列对逻辑有效带宽的影响。'],
-          ['第八站：LDS bank 冲突怎样发生', '通过只改变共享数组索引 stride 的对照，学习先列 lane 到地址映射、再以测量判断。'],
-          ['第九站：普通 VALU 与 RDNA4 WMMA', '比较教学 16×16×16 VALU/WMMA 路径，掌握仅 gfx12 的 wave32 fragment layout 与证据边界。'],
-          ['四个最小 HIP 实验', '统一回顾分支、全局 stride、LDS stride 与 WMMA 的单变量对照、三进程范围和不能证明什么。'],
-          ['写 Kernel 前的硬件决策清单', '沿执行旅程检查工作划分、控制流、资源、地址、矩阵布局与可复跑证据。']
+          ['从 launch 到 workgroup', '从 grid、block 与全局下标建立工作划分，并区分软件 workgroup 与物理调度位置。'],
+          ['workgroup 怎样拆成 wavefront', '用 wave32/wave64 和 256-thread block 理解 lane 分组与波前粒度。'],
+          ['wavefront 怎样落到 WGP、CU 和 SIMD', '按 LLVM 的 CU/WGP execution mode 解释 placement，不把 WGP 固定泛化为特定 CU/SIMD 拓扑。'],
+          ['分支、EXEC 与有效 lane', '用 EXEC 的有效 lane 集合理解 divergent control flow，选做实验 quantifying 分支代价。']
         ]
       },
       {
-        title: '第一个程序 + Roofline 心智模型',
-        summary: 'vector add 跑通、建立性能上限直觉、benchmark 习惯',
+        title: 'GPU 体系结构（下）：片上资源与数据通路',
+        summary: 'VGPR/SGPR/LDS 与占用率，从寄存器到 GDDR6 的内存层级，合并访存、LDS bank 与 WMMA 的概念',
+        status: '✅',
+        lead: '本章补上硬件心智模型的另一半：能同时塞下多少活儿（片上资源与占用率），以及数据从哪里取、怎么不浪费带宽（内存层级、合并访存、LDS bank），最后认识矩阵专用指令 WMMA。每一样都配选做实验，具体优化留到 Part 2 对应算子章。',
+        sections: [
+          ['VGPR、SGPR、LDS 与占用率', '把寄存器、LDS、scratch 与 workgroup shape 放入 residency 和延迟隐藏的资源约束。'],
+          ['内存层级：从寄存器到 GDDR6', '区分 gfx1201 的缓存/显存规格、逻辑算法字节和需要计数器验证的物理流量，强调 LDS 不是 cache。'],
+          ['全局内存访问与合并访存', '用 lane 地址排列理解合并访存为什么快，逻辑带宽不等于物理流量。'],
+          ['LDS bank 冲突', '用同一 wave 的共享地址排布理解 bank 冲突的成因与缓解。'],
+          ['矩阵指令 WMMA', '比较 VALU 与 gfx12 WMMA 路径，理解 wave32 fragment layout 与证据边界。'],
+          ['写 Kernel 前的硬件决策清单', '沿工作划分、控制流、资源、地址、矩阵布局与可复跑证据逐项检查。']
+        ]
+      },
+      {
+        title: '第一个程序 + 性能分析',
+        summary: 'vector add 跑通、baseline benchmark、CPU vs GPU 与带宽利用率分析',
         status: '🚧',
-        lead: '本章在已经验证环境可用、且对硬件有基本心智模型的基础上，带你跑通第一个真正的 GPU 程序——vector add。重点不是算子本身，而是借此建立后续所有实验都会复用的计时习惯和 Roofline 心智模型。本章的 vector add 会贯穿整个 Part 1 profiling 篇。',
+        lead: '本章在已经验证环境可用、且对硬件有基本心智模型的基础上，带你跑通第一个真正的 GPU 程序——vector add。重点不是算子本身，而是借此建立后续所有实验都会复用的计时习惯，并读懂量出来的数字：用算术强度和带宽利用率，建立「这个算子离硬件极限有多远」的直觉。本章的 vector add 会贯穿整个 Part 1 profiling 篇。',
         sections: [
           ['从已经验证的环境开始', '复用第 1 章的环境验证结果，直接进入本章代码目录。'],
           ['跑通 vector add', '编写、编译并运行一个最小 HIP kernel，确认结果正确。'],
           ['建立 baseline benchmark', '用固定输入、热身、重复运行和 GPU event 建立可复查的计时 baseline。'],
-          ['Roofline 心智模型', '用 vector add 的实测带宽和理论上限对比，建立「这个算子离极限有多远」的直觉。'],
-          ['留下实验底稿', '说明源码、命令输出、benchmark 配置和 EXPERIMENT.md 应该如何对应。']
+          ['性能分析：CPU vs GPU 与带宽利用率', '对比 CPU/GPU 实测耗时，算算术强度判断 memory-bound，再用实测带宽对标称带宽估算利用率。'],
+          ['留下实验底稿', '说明源码、命令输出、benchmark 配置应该如何对应到一份可复查的实验记录。']
         ]
       }
     ]

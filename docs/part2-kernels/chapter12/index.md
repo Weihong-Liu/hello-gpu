@@ -1,246 +1,200 @@
 ---
-title: "第12章 综合实战：Fused RMSNorm"
-description: "Hello GPU 第12章 · 综合逐元素、归约与融合，独立完成一次可复现的 Kernel 优化闭环"
+title: "第12章 Fusion：融合算子"
+description: "Hello GPU 第12章 · 用 FlashAttention-style 在线 Attention 学习减少中间写回与 IO-aware"
 ---
 
-# 第12章 综合实战：Fused RMSNorm
+# 第12章 Fusion：融合算子
 
 ## 本章导读
 
-RMSNorm 很适合作为 Part 2 的结业题：平方是 Element-Wise，均值是 Reduction，归一化和权重缩放又是 Element-Wise，而高效实现希望把这些步骤融合在一次读写中。
+前四章分别练习了逐元素、归约、归一化和矩阵乘。本章把它们组合成一次完整的数据流：先计算 `QKᵀ`，再做逐行 Softmax，最后乘以 `V`。真正的新问题不是公式，而是中间的 `S×S` 矩阵要不要写回显存。
 
-本章不再堆叠新术语，而是完整走一遍“固定语义 → 建立基线 → 融合 → 正确性 → 计时 → profiling → 记录负结果”的工作流。HIP/Triton 边界检查、3 个独立正式进程和逐实现 trace 已在 RX 9070 XT 上完成。
+本章提供两条教学路线：HIP 先实现三段式物化版本，再实现不保存完整 Scores/Probability 的在线版本；Triton 用一个 program 处理一行 query，并在 key tile 之间维护在线 Softmax 状态。这是 **FlashAttention-style 的教学实现**，借用了在线 Softmax 和避免物化 `S×S` 中间量的思想，不等同于复现完整论文 kernel。正式数字来自 RX 9070 XT 上 3 个独立进程和独立 trace。
 
-## 12.1 从 LayerNorm 到 RMSNorm
+## 12.1 先固定 Attention 的语义
 
-对一行向量 `x` 和同长度权重 `w`，RMSNorm 定义为：
+这里先只讨论单 batch、单 head、FP32 的前向计算。设序列长度为 `S`，head dimension 为 `D`：
 
 ```text
-mean_square = sum(x[i]²) / N
-inv_rms     = 1 / sqrt(mean_square + epsilon)
-y[i]        = x[i] * inv_rms * w[i]
+Scores = Q @ Kᵀ / sqrt(D)       # [S, S]
+P      = softmax(Scores, dim=1) # [S, S]
+O      = P @ V                  # [S, D]
 ```
 
-与 LayerNorm 相比，它不减去均值，也没有 `(x-mean)²` 这条路径。它仍然需要跨整行归约，因此不是纯逐元素算子。
+每个 query 行都要看全部 key。`Q、K、V、O` 的元素数是 `S×D`，而 Scores 和 P 都是 `S×S`。当 S 增长时，中间矩阵往往比输入输出增长得更快，这正是融合的切入点。
 
-手算 `x=[3,4]、w=[1,1]、epsilon=0`：平方均值是 `(9+16)/2=12.5`，RMS 是 `sqrt(12.5)`，两个输出都除以同一个行级尺度。这个“先得到一个标量，再广播回整行”的结构，就是本章要优化的数据流。
+本章暂不加入 batch、多 head、causal mask、dropout 和反向传播。先把最小数学内核看清，之后再扩展接口。
 
-## 12.2 先锁定实验契约
+## 12.2 物化版本的数据流
 
-首版固定：
+最直接的实现分三步：
 
-- 输入、权重和输出均为 FP32；
-- 对最后一维逐行归约；
-- `epsilon=1e-5`；
-- CPU/PyTorch reference 使用同一公式；
-- kernel-only GPU event 计时；
-- 必须覆盖列数不是二次幂的尾部；
-- 不发布尚未在实验机验证的性能数字。
+1. `scores_kernel`：每个线程计算一个 `Q[row]·K[col]`。
+2. `softmax_rows_kernel`：每个 block 归约一行的最大值和指数和。
+3. `probability_value_kernel`：每个线程计算一个输出元素。
 
-建议正确性形状：
+这条路线的优点是容易逐段检查：Scores、P 和 O 都能单独拷回 CPU。代价是 Scores 和 P 各发生一次全局写入和后续读取，而且要启动三个 kernel。
 
-| Rows | Cols | 目的 |
-| ---: | ---: | --- |
-| 1 | 1 | 最小输入 |
-| 3 | 13 | mask/尾部 |
-| 33 | 257 | 跨 wave/block 边界 |
-| 1024 | 4096 | 教学主形状 |
+注意：这并不意味着“三个 kernel 必然慢”。是否值得融合仍取决于 shape、实现质量、寄存器压力和硬件。这里先把可观察的数据流建立起来。
 
-误差阈值不能只看一个固定常数。换成 FP16/BF16 后，应根据累加 dtype、列数和 reference 精度重新制定 `atol/rtol`。
+## 12.3 在线 Softmax 的四个状态
 
-## 12.3 HIP serial：最短正确基线
+如果按 key tile 顺序扫描，就不能一开始知道整行最大值。在线 Softmax 为已经看过的元素维护：
 
-`code/part2-kernels/chapter12/rmsnorm_hip.hip` 的 `serial` 版本让一个 GPU 线程处理一整行：先顺序累加平方，再顺序写回归一化结果。
+- `m`：当前最大 score；
+- `l`：以当前最大值为基准的指数和；
+- `acc`：按同一尺度累计的加权 V；
+- 新 tile 的 score。
+
+当新 score 为 `x` 时：
+
+```text
+new_m = max(m, x)
+alpha = exp(m - new_m)
+beta  = exp(x - new_m)
+l     = l * alpha + beta
+acc   = acc * alpha + beta * V[x]
+m     = new_m
+```
+
+历史累计值乘 `alpha`，是因为最大值基准改变了。最后输出 `acc / l`。这个递推与先保存全部 score、再一次性做稳定 Softmax 数学等价，但不需要完整的 `S×S` 中间数组。
+
+例如 score 依次是 `2、1、4`。处理前两个后，基准是 2；看到 4 时，旧的指数和必须乘 `exp(2-4)` 后才能和新项放在同一尺度下。漏掉这一步，是在线实现最常见的正确性错误。
+
+## 12.4 HIP materialized：三段式基线
+
+`code/part2-kernels/chapter12/attention_hip.hip` 中的 `materialized` 路线对应上一节的三个 kernel。Softmax 使用一个 block 处理一行：线程先各自扫描若干列，再在 LDS 中归约 max 和 sum。
 
 ```bash
-./rmsnorm_hip --version serial --rows 1024 --cols 4096 \
-  --block 256 --epsilon 1e-5
+./attention_hip --version materialized --seq 128 --dim 64 \
+  --block 256 --warmup 5 --repeat 20
 ```
 
-它的并行度只有“行之间并行”，长行内部没有协作。这通常不是最终性能方案，但有三个教学价值：
+计时事件包围完整的三个 dispatch，因此它测量的是完整 Attention 路径，不会只报某个子 kernel。CPU reference 使用同样的稳定 Softmax 公式，最终比较整个 O 矩阵的最大绝对误差。
 
-1. 控制流与公式几乎一一对应；
-2. 不需要 LDS 和同步，容易定位数值错误；
-3. 为 block 协作版本提供 GPU 侧基线。
+这个版本故意朴素：Scores 的点积没有做 GEMM tile，P@V 也没有 LDS 复用。它的职责是提供容易解释的融合前基线，而不是代替成熟 BLAS。
 
-基线首先要可靠，不需要故意把它写得很糟，也不能拿 CPU 时间冒充 GPU kernel 时间。
+## 12.5 HIP online：一行一个 block
 
-## 12.4 HIP block：协作归约并融合写回
+`online_attention_kernel` 让一个 block 负责一个 query 行：
 
-`block` 版本让一个 block 处理一行。每个线程读取多个列并得到局部平方和，然后在 LDS 中做树形归约：
-
-```cpp
-for (int col = tid; col < cols; col += blockDim.x) {
-    float value = input[row * cols + col];
-    square_sum += value * value;
-}
-shared[tid] = square_sum;
-// LDS tree reduction
-float inverse_rms = rsqrtf(shared[0] / cols + epsilon);
-```
-
-归约结束后，同一批线程直接读取输入、乘 `inverse_rms` 和 weight、写回输出。中间的 `x²` 数组和行级统计量都不写到全局内存。
+1. 全 block 协作计算当前 query 与一个 key 的点积；
+2. 在 LDS 中归约点积；
+3. 线程 0 更新 `m、l、alpha、beta`；
+4. 全 block 协作更新驻留在 LDS 的输出 numerator；
+5. 扫完所有 key 后除以 l 并写回 O。
 
 ```bash
-./rmsnorm_hip --version block --rows 1024 --cols 4096 \
-  --block 256 --epsilon 1e-5
+./attention_hip --version online --seq 128 --dim 64 \
+  --block 256 --warmup 5 --repeat 20
 ```
 
-这里仍有可优化空间：用 wave shuffle 收尾、一次加载后在寄存器中复用 x、向量化读写，以及为不同列数选择 block。第一版只改变“行内协作”这一项，便于和 serial 版本比较。
+这是一份强调数据流的教学实现。它确实消除了完整 Scores/P，但每个 key 都有同步，输出 numerator 也放在 LDS；真实高性能实现会进一步按 query/key 分块、让更多状态进入寄存器并使用矩阵指令。第一版先确保在线递推和边界路径可读。
 
-## 12.5 Triton：一行一个 program
+## 12.6 Triton：一个 program 处理一行
 
-`rmsnorm_triton.py` 让一个 program 处理一行，列方向扩展到下一个二次幂并用 mask 保护尾部：
+`attention_triton.py` 使用一个 Triton program 负责一行 query。program 先加载 Q 行，然后按 `BLOCK_K` 扫描 K/V tile：
 
 ```python
-offsets = tl.arange(0, BLOCK_SIZE)
-mask = offsets < cols
-values = tl.load(input_ptr + row * cols + offsets, mask=mask, other=0.0)
-mean_square = tl.sum(values * values, axis=0) / cols
-inverse_rms = tl.rsqrt(mean_square + epsilon)
-tl.store(output_ptr + row * cols + offsets,
-         values * inverse_rms * weights, mask=mask)
+scores = tl.sum(k_tile * q[None, :], axis=1) * scale
+next_max = tl.maximum(running_max, tl.max(scores, axis=0))
+history_scale = tl.exp(running_max - next_max)
+probabilities = tl.exp(scores - next_max)
+acc = acc * history_scale + tl.sum(probabilities[:, None] * v_tile, axis=0)
 ```
 
-`t0` 与 `t1` 使用同一数学 kernel，分别用 4 和 8 个 warps：
+`t0` 使用 `BLOCK_K=16`，`t1` 使用 `BLOCK_K=32`。两者数学相同，只改变 key tile 大小：
 
 ```bash
-python rmsnorm_triton.py --version all --rows 1024 --cols 4096
+python attention_triton.py --version all --seq 128 --dim 64
 ```
 
-这是一项受控配置实验，而不是“8 warps 一定优于 4 warps”。列数变大时，单个 program 的向量状态可能增加寄存器或 scratch 使用；应让 profiler 和实测时间回答。
+更大的 tile 不保证更快。它可能减少循环轮数，也可能提高寄存器或 scratch 压力。本章保留两个配置，是为了让 profiling 有一个清楚的受控变量。
 
-## 12.6 融合到底省掉了什么
+## 12.7 正确性矩阵
 
-假设分步实现先写 `square=x²`，再归约得到 `mean_square`，最后启动新 kernel 做 normalize：
+第一轮至少运行以下形状：
 
-```text
-x -> square buffer -> row statistic -> reread x -> y
-```
+| S | D | 目的 |
+| ---: | ---: | --- |
+| 1 | 1 | 最小退化情况 |
+| 7 | 13 | S/D 都不是二次幂 |
+| 33 | 31 | 跨过常见 wave/block 边界 |
+| 128 | 64 | 教学主形状 |
 
-融合实现的数据流是：
+每条实现都与 CPU 或 PyTorch 的 `softmax(Q @ K.T / sqrt(D)) @ V` 比较。为了专门压力测试数值稳定性，还应把 Q/K 放大，使原始 score 足以让直接 `exp(score)` 溢出；稳定实现仍应输出有限值。
 
-```text
-x -> local square sum -> block/program reduction -> y
-                   weight ----------------------^
-```
+当前首版自动脚本覆盖 `7×13` 和 `128×64`。其余形状可直接通过 CLI 添加，不需要改 kernel。
 
-它省掉了 square buffer 的分配、写入和读取，也减少 dispatch。但 `x` 是否只从显存读取一次，要看具体实现和编译器生成结果：HIP 第一版在归约后会再次从 input 读取 x；Triton 源码看似只 load 一次，是否发生 spill/重载仍应通过 profiling 判断。不要从源码表象直接推出物理流量。
+## 12.8 计时和 Profiling 看什么
 
-## 12.7 一次完整的运行与检查
-
-在 Part 2 环境中执行：
+完整运行：
 
 ```bash
 cd code/part2-kernels
 bash chapter12/run_all.sh
 ```
 
-脚本会：
-
-1. 激活本篇 `.venv` 和 ROCm 工具链；
-2. 编译 HIP；
-3. 用 `3×13` 检查尾部正确性；
-4. 用 `1024×4096` 跑教学主形状；
-5. HIP/Triton 每个版本都打印 `RESULT` 行。
-
-首版输出中的时间适合判断脚本是否工作，但正式比较仍应重复独立进程、记录环境、保留中位数和范围。
-
-## 12.8 Profiling 与单变量实验
-
-HIP：
+HIP profiling 示例：
 
 ```bash
 hipcc --offload-arch=gfx1201 -O3 -std=c++17 \
-  chapter12/rmsnorm_hip.hip -o /tmp/rmsnorm_hip
+  chapter12/attention_hip.hip -o /tmp/attention_hip
 rocprofv3 --kernel-trace -- \
-  /tmp/rmsnorm_hip --version block --rows 1024 --cols 4096 \
+  /tmp/attention_hip --version online --seq 128 --dim 64 \
   --warmup 0 --repeat 10
 ```
 
-Triton：
+Triton profiling 示例：
 
 ```bash
 rocprofv3 --kernel-trace -- \
-  python chapter12/rmsnorm_triton.py --version t1 \
-  --rows 1024 --cols 4096 --warmup 0 --repeat 10
+  python chapter12/attention_triton.py --version t1 \
+  --seq 128 --dim 64 --warmup 0 --repeat 10
 ```
 
-建议按以下顺序实验：
+除了总时间，还要观察：dispatch 数、是否分配 `S×S` 中间矩阵、VGPR、LDS、scratch、workgroup 和实际 grid。融合减少了全局中间写回，但资源使用过高时仍可能抵消收益。
 
-1. HIP block 只改 `128/256/512`；
-2. 再把归约收尾替换成 wave shuffle；
-3. 再尝试 float4 读写，并保留 scalar tail；
-4. Triton 只改 `num_warps`；
-5. 最后增加 FP16 输入、FP32 累加。
+## 12.9 HIP 与 Triton 的层次对照
 
-每一步记录 shape、假设、唯一改动、正确性、时间、VGPR/LDS/scratch 和结论。变慢的版本也要留下，因为它说明资源或 shape 边界在哪里。
-
-## 12.9 HIP 与 Triton 对照
-
-| 层次 | HIP block | Triton row program |
+| 数据流层次 | HIP | Triton |
 | --- | --- | --- |
-| 行映射 | 一个 block | 一个 program |
-| 局部平方和 | 每线程寄存器 | program 向量 |
-| 行归约 | LDS 树 + 同步 | `tl.sum` |
-| 广播标量 | `shared[0]` | 标量 SSA 值 |
-| 尾部 | `col < cols` | mask |
-| 配置变量 | block size | block size / num warps |
+| query 行 | `blockIdx.x` | `program_id(0)` |
+| key tile/元素 | 显式循环 | `BLOCK_K` tile 循环 |
+| 点积归约 | LDS + `__syncthreads()` | `tl.sum(..., axis=1)` |
+| 在线状态 | LDS 中的 `m/l/acc` | program 内标量与向量 |
+| 尾部 | 显式循环边界 | load/store mask |
 
-两边的核心算法完全相同。HIP 需要显式决定线程如何合作；Triton 把同一工作提升为 program 内的向量和归约。理解映射关系比背诵某一份最终代码更重要。
+HIP 把线程协作和同步完整暴露出来；Triton 更接近 tile 级数学表达。两者都必须回答同样的问题：状态放在哪里、何时重缩放、何时写回显存。
 
-## 12.10 独立优化记录模板
+## 12.10 练习：逐步接近真实 Attention
 
-完成结业实验时，建议保留如下记录：
+建议按以下顺序扩展，每次只增加一项：
 
-```text
-目标 shape / dtype:
-硬件与软件:
-reference 与误差阈值:
-baseline:
-本轮假设:
-唯一改动:
-正确性结果:
-进程级计时与范围:
-profiling 字段:
-是否接受本轮改动:
-负结果与回退点:
-```
-
-“最快版本”不是唯一产物。能解释为什么某个 block 在 257 列有效、在 4096 列反而出现 scratch，才是一份可迁移的优化记录。
-
-## 12.11 迁移到新题目
-
-拿到新的算子规格时，按以下顺序处理：
-
-1. 写数学语义和 CPU/PyTorch reference；
-2. 标记 Element-Wise、Reduction、GEMM 和可融合边界；
-3. 画输入、中间量和输出的数据生命周期；
-4. 做最短正确 HIP/Triton 基线；
-5. 固定 shape、计时和误差口径；
-6. 每轮只改变一项机制；
-7. 用 profiling 解释结果，而不是靠 kernel 名字解释。
-
-LeetGPU 或其他平台题目可以作为扩展练习，但隐藏 shape、评分口径和硬件可能不同。平台成绩不能替代本书实验机上的可复跑记录。
+1. 添加 causal mask，确认被屏蔽位置不参与 max 和 sum。
+2. 添加 batch/head 维度，但保持单个 head 内的算法不变。
+3. 将输入改为 FP16、累加保持 FP32，重新定义误差阈值。
+4. 让 HIP online 一次处理多个 query，复用 K/V tile。
+5. 比较 `BLOCK_K=16/32/64`，记录负结果而不是只保留最快配置。
+6. 将物化版本替换为 rocBLAS/PyTorch 强基线，再判断融合收益。
 
 ## 正式实验结果
 
-![Chapter 12 RMSNorm 性能对比](./images/rmsnorm-performance.png)
+![Chapter 11 Attention 性能对比](./images/attention-performance.png)
 
-主 shape 为 `1024×4096` FP32。HIP serial 为 `1.50486 ms`，block 协作版为 `0.058440 ms`；Triton t0/t1 为 `0.033360/0.030081 ms`。串行行归约是明确负基线，而 t0/t1 的差距只适用于当前列数和资源配置。
+主 shape 为 `S=128, D=64` FP32。HIP online 为 `0.227383 ms`，慢于 materialized 的 `0.0586405 ms`：消除 `S×S` 中间量并没有抵消当前教学实现中的频繁同步。Triton t0/t1 为 `0.024580/0.017380 ms`。这些结果不代表完整 FlashAttention 实现，也不外推到长序列、causal、batch/head 或混合精度。
 
 完整记录见 `code/part2-kernels/chapter12/EXPERIMENT.md`。
 
 ## 本章小结
 
-- RMSNorm 把逐元素平方、行归约、广播和权重缩放组合在一个小而完整的算子中。
-- 相对 LayerNorm，RMSNorm 去掉的是 re-centering（减均值），仍保留基于均方根的 re-scaling，并可带学习权重。
-- HIP serial 建立最短基线，HIP block 和 Triton row program 表达行内并行归约。
-- 融合主要减少中间数组和 dispatch；真实物理读写仍需 profiler 验证。
-- 当前实现已经提供 HIP、Triton、正确性 reference、GPU event、边界检查、3 个独立正式进程与逐实现 profiling 证据。
+- Attention 的融合目标不是少写几行代码，而是避免 `S×S` 中间矩阵的物化和往返。
+- 在线 Softmax 的关键是最大值变化时同时重缩放历史 denominator 和 numerator。
+- HIP 与 Triton 的抽象层级不同，但都可以表达同一套在线状态机。
+- 当前代码是强调数据流的教学实现；HIP/Triton 已在 RX 9070 XT 上完成边界检查、3 个独立正式进程与逐实现 trace，结论严格限定在本章 shape。
 
 ## 延伸阅读
 
-- [RMSNorm 原论文](https://papers.neurips.cc/paper_files/paper/2019/file/1e8a19426224ca89e83cef47f1e7f53b-Paper.pdf)：理解它相对 LayerNorm 移除了 re-centering，而不是移除全部归一化缩放。
-- [AMD HIP Kernel Language](https://rocm.docs.amd.com/projects/HIP/en/latest/reference/kernel_language.html)：LDS、同步和 shuffle。
-- [Triton Layer Normalization 教程](https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html)：对照行级 program 的资源约束。
+- [FlashAttention 论文](https://arxiv.org/abs/2205.14135)：重点关注 IO-aware 分块与中间量生命周期。
+- [AMD HIP Programming Model](https://rocm.docs.amd.com/projects/HIP/en/latest/understand/programming_model.html)：复习 LDS、同步和 wavefront。
+- [Triton Fused Attention 教程](https://triton-lang.org/main/getting-started/tutorials/06-fused-attention.html)：对照更完整的 tile-level 在线状态如何映射到 program。

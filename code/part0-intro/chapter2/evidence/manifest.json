@@ -18,5 +18,9 @@
       "sha256": "a33c048331179091db2b3d6d932a9a867be54348fb951bef481dd6cb432969b1"
     }
   ],
-  "source_commit": "2107e8a171b9599063468854caccc04de4ea147e"
+  "source_commit": "2107e8a171b9599063468854caccc04de4ea147e",
+  "experiments_in_this_subset": [
+    "branch-divergence"
+  ],
+  "note": "All four part0 experiments were measured in one unified 3-process run at source commit 2107e8a. This subset contains branch-divergence; global-memory / lds-banks / matrix-path live in ../chapter3/evidence."
 }

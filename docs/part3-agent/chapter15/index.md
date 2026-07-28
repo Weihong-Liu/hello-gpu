@@ -1,37 +1,37 @@
 ---
-title: "第15章 算子优化 Agent 设计"
-description: "Hello GPU 第15章 · 读题→生成 kernel→跑分→反思迭代"
+title: "第15章 工具封装"
+description: "Hello GPU 第15章 · benchmark/profiling/编译包成 Agent 可调用工具"
 ---
 
-# 第15章 算子优化 Agent 设计
+# 第15章 工具封装
 
 ## 本章导读
 
-> 本章把前面封装的工具组装成一个完整的算子优化 Agent。读完后，你应该能理解 Agent 如何从一道算子题目出发，自动生成 kernel、跑 benchmark、根据结果反思改写。
+> 本章把 Part 1 学过的 benchmark、rocprof 以及编译流程，封装成 Agent 能调用的标准化工具。这是让 Agent「能动手」的前提——没有工具的 Agent 只会空谈。
 
-## 15.1 Agent 的整体架构
+## 15.1 为什么要封装工具
 
-画出 读题 → 生成 → 编译 → 跑分 → 反思 的循环架构图。
+说明 Agent 不能直接操作 shell，需要结构化、可解析的工具接口。
 
-## 15.2 读题与问题理解
+## 15.2 封装 benchmark 工具
 
-让 Agent 解析题目规格（输入形状、数据类型、期望性能）。
+把 Part 1 的计时脚本包成输入 kernel → 输出延迟/带宽的标准化工具。
 
-## 15.3 生成初始 kernel
+## 15.3 封装 profiling 工具
 
-让 Agent 根据题目生成第一版 naive kernel 作为 baseline。
+把 rocprof 包成输入 kernel → 输出瓶颈信号的标准化工具。
 
-## 15.4 跑分与性能反馈
+## 15.4 封装编译工具
 
-调用 benchmark 工具拿到延迟/带宽，转成 Agent 能理解的反馈。
+把 hipcc/triton 编译流程包成输入代码 → 输出编译成功/失败的标准化工具。
 
-## 15.5 反思与改写
+## 15.5 工具的输入输出 schema
 
-让 Agent 根据 profiling 信号（访存瓶颈？计算瓶颈？）决定下一步优化方向。
+用 JSON schema 定义每个工具的接口，让 Agent 能正确调用。
 
-## 15.6 迭代终止条件
+## 15.6 错误处理与重试
 
-说明什么时候停（达到目标性能、迭代轮次上限、连续无提升）。
+说明工具失败时如何把错误信息回传给 Agent 触发反思。
 
 ## 本章小结
 

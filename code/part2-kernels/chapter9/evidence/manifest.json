@@ -1,10 +1,10 @@
 {
   "benchmark": {
     "dtype": "float32",
-    "operator": "softmax",
+    "operator": "sum-reduction",
     "repeat": "50",
     "seed": "20260719",
-    "shape": "4096x1024",
+    "shape": "16777216",
     "warmup": "10"
   },
   "environment": {
@@ -29,30 +29,32 @@
     "triton": "3.6.0",
     "triton_viz": "3.0"
   },
-  "generated_at": "2026-07-19T08:23:40.767314+00:00",
+  "generated_at": "2026-07-19T08:23:40.677354+00:00",
   "git_commit": "ef1722a6743bc0a9d6528d1fa938ad64976f0c05",
   "implementations": [
-    "hip-baseline-3kernel",
-    "hip-fused-block-lds",
-    "triton-t0-compact",
-    "triton-t1-wide"
+    "hip-atomic",
+    "hip-lds",
+    "hip-two-stage",
+    "triton-t0",
+    "triton-t1-local"
   ],
-  "operator": "softmax",
+  "operator": "sum-reduction",
   "process_count": 3,
   "profile_config": {
-    "cols": "1024",
+    "block": "256",
     "gpu_arch": "gfx1201",
-    "hip_block": "256",
     "profile_repeat": "5",
     "profile_warmup": "0",
-    "rows": "4096",
     "seed": "20260719",
-    "source_commit": "ef1722a6743bc0a9d6528d1fa938ad64976f0c05"
+    "size": "16777216",
+    "source_commit": "ef1722a6743bc0a9d6528d1fa938ad64976f0c05",
+    "triton_block": "1024",
+    "triton_programs": "256"
   },
   "run_logs": [
-    "chapter9-process-1.log",
-    "chapter9-process-2.log",
-    "chapter9-process-3.log"
+    "chapter8-process-1.log",
+    "chapter8-process-2.log",
+    "chapter8-process-3.log"
   ],
-  "run_logs_sha256": "cfec951e3178156cf5705dfed7e1b146133129d5f25328aba54b8c16962ff025"
+  "run_logs_sha256": "56f1e70ab3e22b721a4d3e6217c97c1e104c17de0f9d9a2f7a32d15f543d792d"
 }

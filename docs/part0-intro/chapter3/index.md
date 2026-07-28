@@ -1,13 +1,15 @@
 ---
-title: "第3章 第一个程序 + Roofline 心智模型"
-description: "Hello GPU 第3章 · vector add 跑通、建立性能上限直觉、benchmark 习惯"
+title: "第3章 GPU 体系结构（下）：片上资源与数据通路"
+description: "Hello GPU 第3章 · VGPR/SGPR/LDS 与占用率，从寄存器到 GDDR6 的内存层级，合并访存、LDS bank 与 WMMA 的概念"
 ---
 
-# 第3章 第一个程序 + Roofline 心智模型
+# 第3章 GPU 体系结构（下）：片上资源与数据通路
 
 ## 本章导读
 
-> 前面两章我们铺开了环境验证和 GPU 体系结构两张地图。现在，地图已经在你手上了——终于到了**写一点代码、量一组数字**的时候。本章会做三件事：跑通第一个手写的 HIP kernel（vector add）、建立一个可复用的 baseline benchmark、再用 Roofline 心智模型把"这个算子离硬件极限有多远"的直觉建起来。vector add 会贯穿整个 Part 1 profiling 篇，所以这章是后面所有实验的起点。
+> 上一章我们跟着一次 kernel 提交看清了线程怎么划分、波前怎么落到硬件上执行——编程模型这张地图已经在你手上。这一章补上硬件体系结构的另一半。本章会做四件事：搞清楚 GPU 能同时塞下多少活儿（片上资源 VGPR/SGPR/LDS 与占用率）、把数据从寄存器到显存的内存层级理清楚、弄懂为什么读取地址的排列能让带宽差出好几倍（合并访存与 LDS bank 冲突）、最后认识一下矩阵专用指令 WMMA。
+>
+> 这几样是 Part 2 算子优化的直接地基，每一样都有对应的实战章会展开：合并访存在 [第 8 章 Element-Wise](../../part2-kernels/chapter8/index.md)、LDS 协作与 bank 在 [第 9 章 Reduction](../../part2-kernels/chapter9/index.md)、占用率/分块/寄存器累加在 [第 11 章 GEMM](../../part2-kernels/chapter11/index.md)、WMMA 与融合在 [第 12 章 Attention/Fusion](../../part2-kernels/chapter12/index.md)。本章只把概念和直觉立起来，具体怎么优化，留到对应算子章。
 
 本章对应代码在：
 
@@ -17,363 +19,377 @@ code/part0-intro/
 ├── uv.lock
 ├── activate-rocm.sh
 └── chapter3/
-    ├── vector_add.hip
-    └── benchmark_vector_add.py
+    ├── global_memory_access.hip   # 选做：合并访存
+    ├── lds_bank_conflict.hip      # 选做：LDS bank 冲突
+    ├── rdna4_wmma.hip             # 选做：VALU vs WMMA
+    └── run_all.sh
 ```
 
-## 3.1 从已经验证的环境开始
+每个概念都配了一个只改单一变量的受控实验作为选做（就在上面这些文件里），跟着正文跑一遍能建立更牢的直觉。
 
-在写第一行 GPU 代码之前，有一件事必须确认：环境是通的。好在这件事[第 1 章](../chapter1/index.md)已经帮你做完了——三道环境验证门（`rocminfo` 能看到 GPU、PyTorch ROCm 能跑 GPU tensor、最小 HIP 程序能编译运行）都已经通过。如果你还没做，请先回去跑完那三道门。
+## 3.1 VGPR、SGPR、LDS 与占用率
 
-进入本篇环境：
+**决定 GPU 能同时塞下多少活儿的，是几种片上资源里谁先被用光。**
 
-```bash
-cd code/part0-intro
-uv sync
-source ./activate-rocm.sh
-```
+当一个 wave 在等数据（访存）时，硬件不会干等，而是切到另一个已经准备好的 wave 去跑——这就是用「同时跑很多 wave」把等待的时间藏起来（术语叫延迟隐藏）。所以关键问题不是「线程数占满没有」，而是「硬件还能同时塞下多少工作」。对 `gfx1201`，ROCm 规格给出的资源盘子是：**768 KiB 向量寄存器（VGPR）、32 KiB 标量寄存器（SGPR）和 128 KiB 片上内存（LDS）**。[ROCm GFX1201 register and LDS specifications](https://rocm.docs.amd.com/en/latest/reference/gpu-specs.html) 注意，这些只是硬件的总容量；你某个具体 kernel 到底用掉多少寄存器、多少 LDS、有没有溢出到 scratch，得从编译结果或 profiling 里读出来才知道。
 
-如果这里无法激活环境，先回到[第 1 章环境准备](../chapter1/index.md)排查 `uv` 环境、ROCm wheel 和 `_rocm_sdk_devel` 初始化问题。
+把 GPU 想成一座工厂：VGPR/SGPR 是每个工人的私人工具柜，LDS 是车间共用的工作台。一座工厂能同时开工多少条产线（也就是占用率），不取决于工人总数，而取决于哪种资源先被用光——工具柜塞太满，能容纳的工人就少；工作台分太大，能并排的产线就少。
 
-## 3.2 跑通 vector add
-
-环境就绪，开始写代码。一个最小但完整的 HIP 程序通常包含六步：Host 准备数据、Device 分配显存、Host 到 Device 拷贝、启动 kernel、Device 到 Host 拷回、检查结果。这六步构成了所有 GPU 程序的骨架，后面的 Reduction、Softmax、Matmul 无论多复杂，骨架都是这六步。
-
-::: figure fig-vec-add-data-path
+::: figure fig-ch2-residency-resources
 ```mermaid
 flowchart LR
-    A[Host 输入] --> B[hipMalloc]
-    B --> C[hipMemcpy H2D]
-    C --> D[Kernel Launch]
-    D --> E[hipMemcpy D2H]
-    E --> F[校验结果]
+    K[compiled kernel resources] --> V[VGPR per wave/lane]
+    K --> S[SGPR per wave]
+    K --> L[LDS per workgroup]
+    V --> R[resident waves/workgroups: bounded by the first exhausted resource]
+    S --> R
+    L --> R
+    R --> H[more eligible work can help hide latency]
 ```
 
-最小 HIP Vector Add 程序的数据路径
+驻留资源图：VGPR、SGPR、LDS 都可能成为上限；图不是从总容量直接计算 occupancy 的公式。
 :::
 
-完整的 `vector_add.hip` 文件在[第 1 章 1.6 节](../chapter1/index.md#_1-6-验证最小-hip-程序)已经作为环境验证出现过，这里不重复贴。**真正值得重点看的是中间那段 kernel**，它才是跑在 GPU 上的代码：
+这三样东西分工不同：VGPR 存每个 lane 自己的向量临时值；SGPR 存整个 wave 可以共用的标量状态；LDS 则是 workgroup 用来互相协作、复用数据的那块片上内存。
+
+所以别指望从「LDS 有 128 KiB」这种总数，直接算出某个 kernel 的占用率（Occupancy，也就是能同时塞下多少 wave）；更别以为占用率越高越好。真实的有效并发，是寄存器用量、LDS 的分配粒度、workgroup 的形状、硬件上限、能同时跑几个 workgroup、以及瓶颈到底在哪，这些因素一起决定的。比如硬把寄存器压得很低，反而可能逼出 spill（数据被挤到慢得多的显存里）或额外的指令。正确的顺序永远是：先把算法和访存逻辑写对，再去读编译器报告的资源用量，最后用 profiling 判断它是不是真的在干等访存。
+
+**迁移范围：** 本节的这些容量数字，只锚定 gfx1201 的规格；「哪种资源先用光，就先限制能塞多少」这个思路可以迁移，但具体的占用率、会不会 spill、最佳的 tile 大小，都必须针对目标 GPU、编译器和 kernel 单独去测。占用率与分块在真实算子里怎么权衡，[第 11 章 GEMM](../../part2-kernels/chapter11/index.md) 会第一次系统地做。
+
+## 3.2 内存层级：从寄存器到 GDDR6
+
+**这一节最容易混淆，所以我们先把三类完全不同的东西分开。**
+
+第一类：编译器有时候会把可以复用的临时值，一直留在 VGPR/SGPR 里——这叫**寄存器驻留值（Register-Resident Value）**，它压根不是一次「去内存取数、然后命中了寄存器」的 load/store。第二类：`__shared__`/LDS 是由你的程序**显式分配**、用专门的 DS 指令访问的，它是 workgroup 自己的一块片上存储，**不是缓存（cache）**。第三类：只有真正的全局访存（global 的 vector/scalar memory operation），才会沿着各自的「缓存→显存」路径去要数据。
+
+再看 `gfx1201` 的硬件数字：ROCm 规格列出 32 KiB 向量 L0、16 KiB 标量 L0、8 MiB L2 和 64 MiB Infinity Cache；RX 9070 XT 的产品规格则是 16 GB GDDR6 显存、256-bit 位宽、**最高约 640 GB/s** 的理论板卡带宽。[ROCm GFX1201 cache specifications](https://rocm.docs.amd.com/en/latest/reference/gpu-specs.html) [AMD RX 9070 XT 产品规格](https://www.amd.com/en/products/graphics/desktops/radeon/9000-series/amd-radeon-rx-9070xt.html) [AMD Radeon 9000 Quick Reference Guide](https://www.amd.com/content/dam/amd/en/documents/partner-hub/radeon/radeon-rx-9000-series-quick-reference-guide-non-competitive.pdf)
+
+::: figure fig-ch2-memory-hierarchy
+```mermaid
+flowchart TB
+    R[compiler keeps/reuses value in VGPR or SGPR] --> RU[register-resident value]
+    DS[explicit LDS/local DS operation] --> LDS[LDS: workgroup-local storage, not a cache]
+    V[global vector memory operation] --> VL0[vector L0: 32 KiB]
+    VL0 --> L1V[L1 buffer]
+    L1V --> L2[L2: 8 MiB]
+    L2 --> IC[Infinity Cache / MALL: 64 MiB]
+    IC --> G[GDDR6: 16 GB, up to 640 GB/s theoretical board bandwidth]
+    S[global scalar memory operation] --> SL0[scalar L0: 16 KiB]
+    SL0 --> L1S[L1 buffer]
+    L1S --> L2
+```
+
+`gfx1201` 的并列概念路径图：寄存器驻留、LDS/DS、vector-global 和 scalar-global 不能串成一条统一访问链。箭头不保证每次访问必经，也不是完整的物理拓扑、固定延迟、带宽或命中率图。
+:::
+
+这条数据路径可以用取件来理解：寄存器是你手边的桌面，LDS 是车间里你自己摆好货的货架，L2 和 Infinity Cache 是楼下的周转仓库，GDDR6 则是远处的总仓。越远的地方越大、越慢。但要特别记住：LDS 上的货是你亲手搬上去的（显式分配），仓库里的货才是系统自动帮你缓存的——这正是 LDS 和 cache 的本质区别。
+
+如果把这些层级按「离计算多远」排成一座金字塔（@fig-ch2-memory-pyramid），规律就一句话：越往下，容量越大、带宽越低、延迟越高。
+
+::: figure fig-ch2-memory-pyramid
+```mermaid
+flowchart TB
+    R["寄存器（VGPR / SGPR）<br/>每 lane 私有 · 最快 · 容量最小"] --> LDS["LDS<br/>workgroup 显式分配 · 128 KiB"]
+    LDS --> L01["L0 / L1 缓存<br/>向量 L0 32 KiB · 标量 L0 16 KiB"]
+    L01 --> L2["L2 缓存<br/>8 MiB"]
+    L2 --> IC["Infinity Cache<br/>64 MiB"]
+    IC --> G["GDDR6 显存<br/>16 GB · 最高约 640 GB/s · 最慢"]
+```
+
+gfx1201 / RX 9070 XT 的内存层级金字塔：越往下容量越大、带宽越低、延迟越高。再强调一次：LDS 是你显式分配的片上存储，**不是缓存**；只有全局访存才会沿 L0→L2→Infinity Cache→GDDR6 这条路径走。容量为规格值。
+:::
+
+记住两点：图里这些容量数字不是性能排名；也别把 64 MiB 的 Infinity Cache 误写成 L2。更重要的是把下面三件事分清楚：① 规格给的，只是**容量**和**理论板卡带宽**；② 你的程序按算法算出来要读写的字节数，叫**逻辑字节**；③ 数据真正在 GDDR6 上跑了多少（物理流量），还会受缓存命中、写入方式、硬件事务的影响，必须用专门的计数器或受控实验才能说得清。**逻辑字节不等于物理流量**——这条区分会在 Part 2 反复用到。
+
+**迁移范围：** 32 KiB L0、8 MiB L2、64 MiB Infinity Cache、16 GB GDDR6 和 640 GB/s，都只锚定 RX 9070 XT / gfx1201 的规格。某次访问到底命中了哪一级、延迟多少、物理流量多大，必须在目标机器上实测。
+
+## 3.3 全局内存访问与合并访存
+
+**写入的地方一模一样，只是读取的顺序不同，速度就能差出好几倍。**
+
+想象一排 32 个 lane 同时去读数据：如果它们读的是**连续**的下标（lane 0 读 0、lane 1 读 1……），一次访存就能喂饱整排——这叫**合并访存（Coalesced Access）**。如果它们读的下标是**离散**的（lane 0 读 0、lane 1 读 257……），就得牵出多得多的 cache line，带宽利用率直线下降。
+
+::: figure fig-ch2-coalescing
+```mermaid
+flowchart LR
+    subgraph GOOD["合并访存（stride = 1）"]
+        LG["32 个 lane"] --> AG["读地址 0,1,2,…,31<br/>连续"] --> CG["只需少数几条 cache line"]
+    end
+    subgraph BAD["非合并访存（stride = 257）"]
+        LB["32 个 lane"] --> AB["读地址 0,257,514,…<br/>离散"] --> CB["牵出大量 cache line"]
+    end
+```
+
+同样 32 个 lane、同样写 `output[tid]`，差别只在读地址的排布。连续下标一次访存就能喂饱整排 lane，离散下标要牵出多得多的 cache line。这里画的是逻辑地址的排列方式，不是实测的物理事务数。
+:::
+
+我们用一个只改读取步长（stride）的受控实验量了这个差距：每个线程照样写连续的 `output[tid]`，只把读取下标换成 `input[(tid * Stride) & (n - 1)]`。结果，把下标从连续（stride-1）打散到 stride-257，**逻辑有效带宽掉到了约 1/8**。再强调一次：这是按算法字节（`2 × N × sizeof(float)`）反推的**逻辑带宽**，不是硬件计数器数出来的物理 GDDR6 流量。**选做实验：读取步长 → 逻辑有效带宽**
+
+核心 kernel 只有一个变量 `Stride`：每个线程照样写连续的 `output[tid]`，但读取下标变成 `(tid * Stride) & (n - 1)`。`Stride=1` 时相邻 lane 读相邻地址（合并访存），`Stride` 越大地址越离散。
+
+<details>
+<summary>代码：global_memory_access.hip（核心 kernel）</summary>
 
 ```cpp
-__global__ void vector_add(const float* a, const float* b, float* c, int n) {
-  int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx < n) {
-    c[idx] = a[idx] + b[idx];
-  }
+template <unsigned Stride>
+__global__ void gather_copy(
+    const float* input, float* output, std::size_t n
+) {
+    std::size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid < n) {
+        std::size_t source = (tid * Stride) & (n - 1);
+        output[tid] = input[source];
+    }
 }
 ```
 
-这段 kernel 的映射关系很直接：一个 GPU 线程负责一个元素。`blockIdx.x * blockDim.x + threadIdx.x` 计算出当前线程负责的全局下标，`if (idx < n)` 用来处理最后一个 block 可能越界的情况。
-
-新语法速查：
-
-- `__global__`：告诉编译器"这是一个 GPU 函数，由 CPU 调用、在 GPU 上运行"；
-- `<<<blocks, threads>>>`：HIP / CUDA 特有的 kernel 启动语法，`blocks` 是要启动多少组，`threads` 是每组多少个线程；
-- `blockIdx.x` / `threadIdx.x`：每个 GPU 线程拿到的"工号"，用它来算自己负责数组里的哪个位置。
-
-换成大白话：`vector_add<<<blocks, threads>>>(...)` 就是在 GPU 上同时叫起 `blocks × threads` 个工人，每个工人执行一次 `vector_add` 函数（如 @fig-block-thread-hierarchy 所示）。
-
-::: figure fig-block-thread-hierarchy
-![Block 与 Thread 的层级关系](./images/block-thread-hierarchy.png)
-
-Grid → Block → Thread 的层级，以及 blockIdx/threadIdx 如何算出全局下标
-:::
-
-编译并运行：
-
-```bash
-cd chapter3
-hipcc vector_add.hip -O2 -o vector_add && echo "compile_status: PASS"
-./vector_add
-```
-
-<details>
-<summary>输出：vector add 运行结果（9070XT）</summary>
-
-```text
-device_name: AMD Radeon RX 9070 XT
-vector_size: 1048576
-blocks: 4096
-threads_per_block: 256
-max_error: 0
-status: PASS
-```
+完整可运行版本位于 [`code/part0-intro/chapter3/global_memory_access.hip`](https://github.com/datawhalechina/hello-gpu/blob/dev/code/part0-intro/chapter3/global_memory_access.hip)。
 
 </details>
 
-看到 `status: PASS` 后，你已经跑通了第一段真正由自己编译的 GPU kernel——欢迎正式进入 GPU 编程的世界。
+**怎么运行**（原生 Ubuntu 实验机，已 `uv sync` 并 `source ./activate-rocm.sh`）：
 
-## 3.3 建立 baseline benchmark
+```bash
+cd code/part0-intro/chapter3
+hipcc --offload-arch=gfx1201 -O3 -std=c++17 global_memory_access.hip -o global_memory_access
+# --implementation all 会依次跑 stride-1 / stride-17 / stride-257
+./global_memory_access --implementation all --size 16777216 --warmup 10 --repeat 50
+```
 
-这一节加入一个很小的 benchmark。它不是为了证明 Vector Add 有多快，而是为了提前建立后续章节会反复使用的习惯：固定输入规模、先 warmup、重复运行多次、记录 mean / median / min。
+**结果**（RX 9070 XT + ROCm 7.13，`N=16,777,216` FP32，逻辑有效带宽按 `2 × N × sizeof(float) / time`）：
 
-完整代码在下面的折叠块里。如果你只想先看懂大意，记住三件事（如 @fig-benchmark-warmup-repeat-sync 所示）：
+| 读取 stride | 中位数时间（ms） | 逻辑有效带宽（GB/s） | 相对 stride-1 |
+| --- | ---: | ---: | ---: |
+| 1 | 0.235040 [0.231941, 0.237641] | 571.042 | 基线 |
+| 17 | 0.771721 [0.770461, 0.772321] | 173.920 | -69.54% |
+| 257 | 1.887641 [1.884983, 1.923662] | 71.103 | -87.55% |
 
-1. 正式计时前先 warmup 5 次，让 GPU 进入比较稳定的状态；
-2. 正式跑 30 次，每次用 `torch.cuda.Event` 量 GPU 真正执行完成的时间；
-3. 最后用最小值估算带宽，因为最小值更像"没被外部干扰"的那次。
+为什么连续下标能喂饱带宽、在真实算子里怎么保证合并访存（含 Grid-Stride Loop、向量化、尾部处理），[第 8 章 Element-Wise](../../part2-kernels/chapter8/index.md) 会系统地讲。
 
-::: figure fig-benchmark-warmup-repeat-sync
-![Benchmark 的赛前准备](./images/benchmark-warmup-repeat-sync.png)
+**迁移范围：** 「先假设用连续相邻的下标」通常是个值得试的起点；但具体的步长曲线、缓存的影响、最佳的数据布局，都必须用目标的数据类型、规模、编译器和 GPU 重新测。
 
-准确 benchmark 前先 warmup、多次 repeat，并在同步后计时
+## 3.4 LDS bank 冲突
+
+**LDS 快不快，还要看同一个 wave 里的线程，访问的地址是怎么排布的。**
+
+LDS 内部可以并行访问的小单元叫**存储体（Bank）**。用收银台来理解最直观：LDS 好比一排并行的收银台，一个 wave 的 32 个 lane 同时来结账。stride-1 时一人一台，瞬间结完；如果 32 人全挤向同一个台（stride-32），只能排长队，于是慢了好几倍；把每人错开一个台（stride-33），队伍又散了。
+
+::: figure fig-ch2-lds-pattern
+```mermaid
+flowchart TB
+    L[lane 0, 1, 2, ... within one wave] --> A[stride 1: base + lane]
+    L --> B[stride 32: base + 32 × lane]
+    L --> C[stride 33: base + 33 × lane]
+    A --> M[measured LDS access pattern]
+    B --> M
+    C --> M
+```
+
+LDS 地址映射示意：它显示实验的索引模式，而不是声称 gfx1201 固定的 bank 数、bank 公式或每周期服务规则。
 :::
 
+我们的受控实验测得：在这套 wave32 / 共享内存索引方式下，stride-32 比 stride-1 慢约 5 倍；stride-33 错开一个台后基本回到基线。需要强调：我们测出了这个惩罚，但**没有**把「bank 有几个、怎么取模」当成 gfx1201 的官方结论——那要靠文档或计数器确认。**选做实验：共享数组索引步长 → bank 冲突**
+
+核心 kernel 先把一块 `__shared__` 填好，再让每个 lane 按 `wave * kRegion + lane * Stride + (iteration & 31)` 反复读取。`Stride` 改变的是同一 wave 内 32 个 lane 落到哪些 bank 上。
+
 <details>
-<summary>代码：benchmark_vector_add.py</summary>
+<summary>代码：lds_bank_conflict.hip（核心 kernel）</summary>
 
-```python
-import argparse
-import statistics
-import time
+```cpp
+template <unsigned int Stride>
+__global__ void lds_kernel(const float* input, float* output, std::size_t n) {
+    constexpr unsigned int kSharedElements = kWavesPerBlock * kRegion;
+    volatile __shared__ float shared[kSharedElements];
+    volatile float* shared_pointer = shared;
+    for (unsigned int offset = threadIdx.x; offset < kSharedElements;
+         offset += kBlockSize) {
+        shared[offset] = shared_value(offset);
+    }
+    __syncthreads();
 
-import torch
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(description="Benchmark torch vector add on CPU and ROCm GPU.")
-    parser.add_argument("--size", type=int, default=1 << 24)
-    parser.add_argument("--warmup", type=int, default=5)
-    parser.add_argument("--repeat", type=int, default=30)
-    return parser.parse_args()
-
-
-def benchmark_cpu(size, warmup, repeat):
-    a = torch.ones(size, dtype=torch.float32)
-    b = torch.full((size,), 2.0, dtype=torch.float32)
-
-    for _ in range(warmup):
-        c = a + b
-    _ = c.sum().item()
-
-    times = []
-    for _ in range(repeat):
-        start = time.perf_counter()
-        c = a + b
-        _ = c.sum().item()
-        end = time.perf_counter()
-        times.append((end - start) * 1000)
-    return times
-
-
-def benchmark_gpu(size, warmup, repeat):
-    if not torch.cuda.is_available():
-        raise SystemExit("PyTorch ROCm backend is not available")
-
-    a = torch.ones(size, device="cuda", dtype=torch.float32)
-    b = torch.full((size,), 2.0, device="cuda", dtype=torch.float32)
-
-    for _ in range(warmup):
-        c = a + b
-    torch.cuda.synchronize()
-    _ = c.sum().item()
-
-    times = []
-    for _ in range(repeat):
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
-        c = a + b
-        end.record()
-        torch.cuda.synchronize()
-        times.append(start.elapsed_time(end))
-    _ = c.sum().item()
-    return times
-
-
-def summarize(name, times, size):
-    mean_ms = statistics.mean(times)
-    median_ms = statistics.median(times)
-    min_ms = min(times)
-    bytes_moved = size * 3 * 4
-    bandwidth_gb_s = bytes_moved / (min_ms / 1000) / 1e9
-
-    print(f"{name}_mean_ms: {mean_ms:.6f}")
-    print(f"{name}_median_ms: {median_ms:.6f}")
-    print(f"{name}_min_ms: {min_ms:.6f}")
-    print(f"{name}_bandwidth_gb_s_by_min: {bandwidth_gb_s:.6f}")
-
-
-def main():
-    args = parse_args()
-    print(f"torch: {torch.__version__}")
-    print(f"cuda_available: {torch.cuda.is_available()}")
-    if torch.cuda.is_available():
-        print(f"device_name: {torch.cuda.get_device_name(0)}")
-    print(f"vector_size: {args.size}")
-    print(f"warmup: {args.warmup}")
-    print(f"repeat: {args.repeat}")
-
-    cpu_times = benchmark_cpu(args.size, args.warmup, args.repeat)
-    gpu_times = benchmark_gpu(args.size, args.warmup, args.repeat)
-
-    summarize("cpu", cpu_times, args.size)
-    summarize("gpu", gpu_times, args.size)
-    print("status: PASS")
-
-
-if __name__ == "__main__":
-    main()
+    const std::size_t tid =
+        static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (tid >= n) {
+        return;
+    }
+    unsigned wave = threadIdx.x / kWaveSize;
+    unsigned lane = threadIdx.x % kWaveSize;
+    float accumulator = input[tid];
+    for (unsigned int iteration = 0; iteration < kReadIterations;
+         ++iteration) {
+        unsigned index = wave * kRegion + lane * Stride +
+                                 (iteration & 31);
+        accumulator += shared_pointer[index];
+    }
+    output[tid] = accumulator;
+}
 ```
+
+完整可运行版本位于 [`code/part0-intro/chapter3/lds_bank_conflict.hip`](https://github.com/datawhalechina/hello-gpu/blob/dev/code/part0-intro/chapter3/lds_bank_conflict.hip)。
 
 </details>
 
-其中 GPU 计时最关键的是使用 event 并在每轮后同步：
-
-```python
-start.record()
-c = a + b
-end.record()
-torch.cuda.synchronize()
-times.append(start.elapsed_time(end))
-```
-
-否则 CPU 端可能只是把任务提交出去，计到的不是 GPU 真正执行完成的时间。
-
-运行：
+**怎么运行**：
 
 ```bash
-python benchmark_vector_add.py
+cd code/part0-intro/chapter3
+hipcc --offload-arch=gfx1201 -O3 -std=c++17 lds_bank_conflict.hip -o lds_bank_conflict
+# --implementation all 会依次跑 stride-1 / stride-32 / stride-33
+./lds_bank_conflict --implementation all --size 16777216 --warmup 10 --repeat 50
 ```
+
+**结果**（RX 9070 XT + ROCm 7.13，256-thread block、每线程 256 次 LDS 读取）：
+
+| LDS stride | 中位数时间（ms） | 对照读法 |
+| --- | ---: | --- |
+| 1 | 8.075865 [8.065751, 8.096146] | 基线 |
+| 32 | 42.218658 [41.267262, 52.018600] | 5.23× 基线时间 |
+| 33 | 8.093651 [6.570887, 8.099028] | ≈基线，但进程范围更宽 |
+
+LDS 的协作加载、同步与 bank 布局在真实算子里怎么用（以及 Wave Shuffle 这种更细的协作），[第 9 章 Reduction](../../part2-kernels/chapter9/index.md) 会结合归约系统地讲。
+
+**迁移范围：** 「先看同一个 wave 的共享地址怎么排，再动手测」这个方法可以迁移；但本节的具体结果，只属于当前这个 wave32、这种数组布局、这个循环、这个编译器和 gfx1201 的受控场景。
+
+## 3.5 矩阵指令 WMMA
+
+**算矩阵乘法时，让整排线程协作的专用指令，比普通算法快多少？**
+
+普通 VALU（向量算术逻辑单元）路径，是每个 lane 各自独立算出一个输出元素。RDNA 4 还提供了一类专门的**波前矩阵乘加指令（WMMA，Wave Matrix Multiply-Accumulate）**：由整个 wave32 一起调用，32 个 lane 分工协作，合力拼装一块 16×16 的矩阵。打个比方：普通路径像 32 个人各算各的答案；WMMA 则让这 32 人组成一条流水线，每人只负责搬运其中的一小块。分工协作让矩阵乘这类规整计算快得多，代价是积木的尺寸（16×16×16）和摆放方式（fragment layout）都是 gfx12 定死的，不能随意改。
+
+::: figure fig-ch2-valu-wmma
+```mermaid
+flowchart LR
+    V["VALU: one thread computes one C[row, col] with k loop"] --> VC[16 by 16 FP32 output]
+    W[WMMA gfx12: one wave32 distributes fragments] --> F[A: transposed/column-major]
+    W --> G[B/C/D: row-major]
+    F --> I[wmma f32 16x16x16 f16 w32 gfx12]
+    G --> I
+    I --> D[each lane stores 8 D elements]
+```
+
+两个路径计算相同的小矩阵任务，但 WMMA 的 fragment layout 与 intrinsic 是 gfx12 专属接口；图不表示生产 GEMM 的 tile、流水或 library 实现。
+:::
+
+按 AMD GPUOpen 的说明，这条指令 `__builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12` 由整个 wave32 调用；每个 lane 负责给一块矩阵碎片（fragment）装入/存出 8 个元素，其中 A 按转置（column-major）解释，B、C、D 按行优先（row-major）。[GPUOpen：RDNA 4 WMMA intrinsic 与 fragment layout](https://gpuopen.com/learn/using_matrix_core_amd_rdna4/)
+
+我们的受控实验测得：对一批独立的 16×16×16（FP16→FP32）小矩阵乘，WMMA 的教学吞吐约为普通 VALU 路径的 **2.3 倍**。但务必注意：这是教学级微基准，没有大矩阵 tiling、双缓冲、生产 epilogue 或库级调度，**不是** rocBLAS 基准，也远不是 RX 9070 XT 的理论矩阵峰值。**选做实验：普通 VALU vs gfx12 WMMA**
+
+两条路径算同一批独立的 16×16×16（FP16→FP32）矩阵乘：`valu_kernel` 让每个线程各算一个输出元素；`wmma_kernel` 由整个 wave32 调用一条 WMMA 指令，32 个 lane 分工装载 fragment、协作完成矩阵乘。
 
 <details>
-<summary>输出：Vector Add baseline benchmark @ AMD Radeon RX 9070 XT + ROCm 7.13</summary>
+<summary>代码：rdna4_wmma.hip（两条路径的核心 kernel）</summary>
 
-```text
-torch: 2.11.0+rocm7.13.0
-cuda_available: True
-device_name: AMD Radeon RX 9070 XT
-vector_size: 16777216
-warmup: 5
-repeat: 30
-cpu_mean_ms: 8.681129
-cpu_median_ms: 8.536416
-cpu_min_ms: 7.356311
-cpu_bandwidth_gb_s_by_min: 27.367874
-gpu_mean_ms: 0.353474
-gpu_median_ms: 0.346692
-gpu_min_ms: 0.345132
-gpu_bandwidth_gb_s_by_min: 583.332163
-status: PASS
+```cpp
+// 普通 VALU 路径：一线程算一个 C[row, col]
+__global__ void valu_kernel(const _Float16* matrix_a_batches,
+                            const _Float16* matrix_b_batches,
+                            float* matrix_c_batches) {
+    const std::size_t batch = blockIdx.x;
+    const _Float16* matrix_a = matrix_a_batches + batch * kMatrixElements;
+    const _Float16* matrix_b = matrix_b_batches + batch * kMatrixElements;
+    float* matrix_c = matrix_c_batches + batch * kMatrixElements;
+    const int row = threadIdx.x / 16;
+    const int column = threadIdx.x % 16;
+    float accumulator = 0.0f;
+    for (int k = 0; k < 16; ++k) {
+        accumulator += static_cast<float>(matrix_a[row * 16 + k]) *
+                       static_cast<float>(matrix_b[k * 16 + column]);
+    }
+    matrix_c[row * 16 + column] = accumulator;
+}
+
+// WMMA 路径：整个 wave32 协作，一条指令算一块 16×16×16
+__global__ void wmma_kernel(const _Float16* matrix_a_batches,
+                            const _Float16* matrix_b_batches,
+                            float* matrix_c_batches) {
+    const std::size_t batch = blockIdx.x;
+    const _Float16* matrix_a = matrix_a_batches + batch * kMatrixElements;
+    const _Float16* matrix_b = matrix_b_batches + batch * kMatrixElements;
+    float* matrix_c = matrix_c_batches + batch * kMatrixElements;
+    Half8 a_frag;
+    Half8 b_frag;
+    Float8 c_frag{};
+    const int laneWrapped = threadIdx.x % 16;
+    const int laneGroup = threadIdx.x / 16;
+    for (int ele = 0; ele < kFragmentElements; ++ele) {
+        a_frag[ele] = matrix_a[16 * laneWrapped + (ele + laneGroup * 8)];
+        b_frag[ele] = matrix_b[16 * (ele + laneGroup * 8) + laneWrapped];
+    }
+    c_frag = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(
+        a_frag, b_frag, c_frag);
+    for (int ele = 0; ele < kFragmentElements; ++ele) {
+        matrix_c[16 * (ele + laneGroup * 8) + laneWrapped] = c_frag[ele];
+    }
+}
 ```
 
-GPU min 延迟 0.345 ms，估算有效带宽约 583 GB/s——比 CPU（27.4 GB/s）快约 21 倍。
+完整可运行版本（含 CPU FP32 参考校验）位于 [`code/part0-intro/chapter3/rdna4_wmma.hip`](https://github.com/datawhalechina/hello-gpu/blob/dev/code/part0-intro/chapter3/rdna4_wmma.hip)。
 
 </details>
 
-这里的带宽估算使用的是 Vector Add 的最简单数据量模型。一次 Vector Add 要读 `a`、读 `b`、写 `c`，一共经过 3 个数组；每个元素是 `float32`，也就是 4 字节。所以一次完整 Vector Add 搬动的数据量是：
-
-```text
-bytes_moved = vector_size × 3 × 4
-```
-
-实测 GPU 估算有效带宽约 583 GB/s——下一节就拿它和 Roofline 上限对比。
-
-## 3.4 Roofline 心智模型
-
-有了 baseline 数字，现在把它和理论上限对比一下，建立"这个算子离硬件极限有多远"的直觉。
-
-[第 2 章 2.10 节](../chapter2/index.md#_2-10-roofline-的硬件来源) 我们建立了 Roofline 模型：任何 kernel 的实际性能都被**算力上限**和**带宽上限**两条线卡住。现在用 vector add 实测一下它落在哪。
-
-先算 vector add 的算术强度：
-
-```text
-对每个 float32 元素：
-  读 a[i]：4 Byte
-  读 b[i]：4 Byte
-  写 c[i]：4 Byte
-  做 1 次加法：1 FLOP
-
-算术强度 = FLOP / Byte = 1 / 12 ≈ 0.083 FLOP/Byte
-```
-
-算术强度极低（约 0.083 FLOP/Byte），这意味着 vector add **必然落在 Roofline 的斜线那一侧——它是 memory-bound 的**。换句话说，vector add 慢不慢，几乎完全取决于显存带宽，和算力无关。
-
-现在把实测带宽和理论上限对比：
-
-| 项目 | 数值 |
-| ---- | ---- |
-| vector add 算术强度 | ~0.083 FLOP/Byte（memory-bound）|
-| 实测有效带宽（PyTorch `benchmark_vector_add.py`, 16M 元素 ≈ 64 MiB）| **~583 GB/s** |
-| 实测有效带宽（手写 HIP coalesced, 第 5 章同规模 benchmark）| **~603 GB/s** |
-| GDDR6 实测带宽上限（copy, ≥1 GiB 平台，见 [第 2 章 §2.11](../chapter2/index.md)）| ~510 GB/s |
-| 标称带宽（理论峰值）| ~760 GB/s |
-| 带宽利用率（PyTorch / GDDR6 上限）| ~114%（高于 100%，见下文解释）|
-| 带宽利用率（手写 HIP / GDDR6 上限）| ~118%（同样属于有效带宽口径）|
-
-> 两个 vector add 点的有效带宽（583 / 603 GB/s）都高于 GDDR6 copy 稳态上限（510 GB/s），看起来"超标"——原因不是测量错了，而是这里的 GB/s 是按 `3 × n × sizeof(float)` 反推的**有效带宽**，不是硬件计数器直接数出来的 DRAM 字节数。16M 元素约 64 MiB，工作集仍可能吃到 L2 / 写路径优化；[第 2 章 §2.11](../chapter2/index.md) 的 copy 扫描也能看到 64 MiB footprint 高于 1 GiB plateau。这说明 vector add 在这个规模下没有完全卡在纯 GDDR6 上——这正是它的访存模式非常友好（完全合并、线性流式）的结果。要让带宽利用率回到 100% 以内，把输入规模推到 ≥1 GiB（远超 L2）再测即可。
-
-现在把这两个实测点画到 Roofline 曲线上。横轴是算术强度（FLOP/Byte，对数轴），纵轴是实际性能（TFLOPS，对数轴）；硬件线来自 [第 2 章 §2.11](../chapter2/index.md) 的实测值（GDDR6 copy plateau ~510 GB/s、fp32 算力 ~10.6 TFLOPS、fp16 算力 ~79.9 TFLOPS）。橙色点来自本节 `benchmark_vector_add.py` 的 PyTorch ROCm baseline 输出；紫色点来自[第 5 章](../../part1-profiling/chapter5/index.md)同规模手写 HIP coalesced benchmark（`vector_add_bench --kernel coalesced`）。注意，§3.2 的 `vector_add.hip` 只用于验证手写 HIP kernel 能编译运行并通过正确性检查，不提供这张图里的计时和带宽数据。
-
-::: figure fig-roofline-vadd
-![Roofline 曲线：vector add 实测点](./images/roofline-vector-add.png)
-
-PyTorch baseline 和手写 HIP coalesced 两个 vector add 实测点都落在 Roofline 斜线最左下端——典型的 memory-bound。斜线分别标出 PyTorch 有效带宽（583 GB/s）、手写 HIP 有效带宽（603 GB/s）和 GDDR6 平台 copy plateau（510 GB/s）；两条水平线是 fp32（10.6 TFLOPS，SIMD FMA）和 fp16（79.9 TFLOPS，WMMA）算力上限。图由 `code/part0-intro/chapter3/plot_roofline.py` 生成。
-:::
-
-读这张图能直接得到三个直觉：
-
-- **两个 vector add 点都贴着斜线，远离两条水平线**——它们都是 memory-bound，算力（VALU/WMMA）完全没吃满，瓶颈在带宽。PyTorch baseline 和手写 HIP coalesced 的有效带宽接近（583 vs 603 GB/s），说明这个简单算子的主要限制不是框架开销，而是线性流式访存本身。就算把 fp32 换成 fp16，算力线再高它也快不了多少，因为它压根没走到算力那一侧。
-- **它们已经接近斜线本身**——说明 vector add 的访存效率很高（完全合并），优化空间已经不大；想再快只能提高算术强度（融合多个 elementwise 算子，让搬一次数据做更多 FLOP），把工作点**沿斜线往右上方推**，推过拐点后才会进入 compute-bound 区。
-- **两条水平线差距巨大（fp16 是 fp32 的 ~7.5 倍）**——但这个差距对 vector add 毫无意义，因为它在斜线那一侧。只有 GEMM / Attention 这种高算术强度算子（点落在水平线附近）才能吃到 WMMA 的红利——这是后面 [第 10 章 GEMM](../../part2-kernels/chapter10/index.md)、[第 11 章 Flash Attention](../../part2-kernels/chapter11/index.md) 反复要用的判断。
-
-这个对比建立了一个贯穿全书的核心直觉：**判断一个算子优化得好不好，不是只看绝对延迟，还要看它位于 Roofline 拐点哪一侧、离对应参考线还有多远**。后续 Part 1 的 [第 5 章](../../part1-profiling/chapter5/index.md)、[第 6 章](../../part1-profiling/chapter6/index.md) 会用 profiling 工具比较配置、检查实验变量并解读工作点；Part 2 的每个算子都会继续使用这套方法。
-
-## 3.5 留下实验底稿
-
-跑完前面三段命令，你大概觉得事情已经做完了——其实还没有。**性能工作真正麻烦的一刻，往往不是第一次没跑快，而是过几天回头看时，你自己也说不清当时跑了哪个版本、用了什么输入、那个数字到底是怎么量出来的。** 没留记录的实验，三天后基本等于白做。
-
-所以从这第一个 GPU 程序开始，建议你养成一个小习惯：**每跑完一组实验，顺手把目标、命令、结果记到同一个地方**。在哪里记并不重要——一个 markdown 文件、一份 notebook 都行；重要的是这份记录能在几天后让你（或者别人）一眼看回当初做了什么。
-
-够用的结构其实只有三段：**目标 → 流程 → 结论**。下面这个模板可以直接拿去用：
-
-````markdown
-# 实验记录：第一个 GPU 程序
-
-## 实验目标
-
-验证 PyTorch ROCm、最小 HIP kernel 和 Vector Add baseline benchmark 是否能跑通。
-
-## 实测流程
-
-（贴出可以从章节目录直接复制运行的命令）
+**怎么运行**：
 
 ```bash
-cd code/part0-intro
-source ./activate-rocm.sh
-python chapter1/check_torch_rocm.py
-cd chapter3
-hipcc vector_add.hip -O2 -o vector_add
-./vector_add
-python benchmark_vector_add.py
+cd code/part0-intro/chapter3
+hipcc --offload-arch=gfx1201 -O3 -std=c++17 rdna4_wmma.hip -o rdna4_wmma
+# --implementation all 会依次跑 valu 和 wmma 两条路径；--size 是矩阵批数
+./rdna4_wmma --implementation all --size 4096 --warmup 10 --repeat 50
 ```
 
-## 实测结论
+**结果**（RX 9070 XT + ROCm 7.13，batch 4,096 个独立 16×16×16 乘，正确性对 CPU FP32 参考，smoke 最大绝对误差 `2.98e-08`）：
 
-| 项目 | 数值 |
-| ---- | ---- |
-| 硬件 | AMD Radeon RX 9070 XT（gfx1201）+ ROCm 7.13（原生 Ubuntu 24.04）|
-| 输入规模 | 16,777,216 个 float32（≈ 64 MiB/数组）|
-| GPU min 延迟 | 0.345 ms |
-| GPU 估算带宽 | ~583 GB/s |
-| status | PASS |
-````
+| 路径 | 中位数时间（ms） | 吞吐（TFLOPS） | 相对 |
+| --- | ---: | ---: | ---: |
+| `valu` | 0.037200 [0.036080, 0.038320] | 0.902001 | 基线 |
+| `wmma` | 0.016160 [0.016121, 0.016160] | 2.076388 | 2.30× |
 
-看起来朴素，但半年后你回头翻这些记录，会非常感谢现在的自己。后面这本教程会一路写到 Reduction、Softmax、Matmul、Attention，外加一系列 rocprof 实验——等到 kernel 版本越积越多、benchmark 配置越改越乱时，**能不能一眼看回当初跑过什么**，往往就是"顺利继续"和"回头返工"的分界线。
+WMMA 在真实算子里怎么用（含分块、fragment 排布、与融合的配合），[第 11 章 GEMM](../../part2-kernels/chapter11/index.md) 和 [第 12 章 Attention/Fusion](../../part2-kernels/chapter12/index.md) 会展开。
 
-试一试：把 `--size` 从默认的 `1 << 24` 改成 `1 << 20` 和 `1 << 26`，分别再跑一次 benchmark，把每次的硬件、输入规模、GPU min 延迟和估算带宽随手记到你的实验记录里。先猜一下——GPU 带宽会一直变大、一直变小，还是先升后降？这道题没有标准答案，目的是让你亲手建立"输入规模 vs 性能"的第一感觉，后面 Part 1 会反复用到。
+**迁移范围：** 这条指令、wave32 的碎片宽度和布局，只适用于 gfx12/RDNA 4；「先验证布局和对数，再比较两条语义相同的路径」这个方法可以迁移，但任何真正的大 GEMM，都得单独做自动调参（autotune）并和库实现对照。
+
+## 3.6 写 Kernel 前的硬件决策清单
+
+我们把上下两章的要点，压缩成一份真正能照着做的检查清单。第一次写 kernel，不需要每条都答对；但要做到：每一条结论，都能在源码、编译报告、实验记录或 profiler 里找到证据。
+
+1. **启动（launch）：** 输出的逻辑分块是怎么切的？`grid`、`block`、`tid` 加上越界保护，是不是正好覆盖全部、且只覆盖一次？
+2. **工作组/波前：** 目标机器实际的波前大小是多少？组内的协作和分支，有没有跨越那些不该混在一起的 lane？
+3. **放在哪执行（placement）：** 哪些正确性假设，依赖了「同一个 workgroup 共享 LDS/同步」？你是不是错误地假定了固定的 CU/WGP 结构？
+4. **控制流：** 判断条件会不会让同一个 wave 的 lane 走进不同的长路径？能不能靠调整数据布局来改善一致性，又不损害语义？
+5. **资源占用（residency）：** 编译产物用了多少 VGPR、SGPR、LDS、scratch？几种候选 tile/block 的资源变化，记录了吗？
+6. **数据路径：** 每个数组在哪段范围里被复用？逻辑字节和真实硬件流量，有没有分清？
+7. **全局地址：** 同一个 wave 的 lane，一轮里读的逻辑下标是不是相邻的？每种步长/布局，越界处理都对吗？
+8. **LDS：** 把「lane → 共享地址」列出来之后，改变填充/步长，同步和数值结果还保持一致吗？用对照实验测过吗？
+9. **矩阵路径：** 如果用了 WMMA，目标是不是 gfx12？碎片 A/B/C/D 的布局、波前大小、CPU 参考，是不是全都对得上？
+10. **证据：** 硬件、软件、源码版本、规模、预热/重复次数，固定了吗？报告的是中位数和多个独立进程的范围，而不是单次最好值吗？
+
+| 结论类型 | 例子 | 下一步 |
+| --- | --- | --- |
+| **可迁移** | 先做边界正确性，再分离逻辑指标与物理归因 | 在新 kernel 中继续采用这套验证顺序 |
+| **需重测** | stride、LDS layout、VGPR/LDS 资源、occupancy、分支代价 | 更换 GPU、dtype、shape、编译器或算法后重新 benchmark/profile |
+| **仅 gfx12** | `__builtin_amdgcn_wmma_*_w32_gfx12`、WMMA fragment layout | 仅在 gfx12 编译/运行守卫下使用；其他 target 查其对应文档 |
 
 ## 本章小结
 
-- 本章在 `part0-intro` 环境里跑通了第一个手写 HIP Vector Add kernel。
-- 第一个 HIP kernel 使用"一线程处理一个元素"的最简单映射方式，方便理解 block、thread 和全局下标。
-- baseline benchmark 使用 warmup + repeat，并用 GPU event 计时，避免只量到 CPU 提交开销。
-- vector add 的算术强度极低（~0.083 FLOP/Byte），必然是 memory-bound——它的性能几乎完全取决于显存带宽。
-- 用实测带宽和 Roofline 理论上限对比，建立了"算子离极限有多远"的直觉，这个直觉会在整个 Part 1 反复用到。
-- 下一章进入 Part 1 profiling 篇，先系统学怎么量准数字（benchmark 与可信计时）。
+- 一个 wave 等访存时，硬件会切到别的 wave 去跑（延迟隐藏）；能同时塞下多少 wave，取决于 VGPR/SGPR/LDS 哪种资源先用光，而不是线程数。占用率不是越高越好。
+- 内存层级越往下越大、越慢；LDS 是你显式分配的片上存储，**不是缓存**；**逻辑字节不等于物理流量**。
+- 让相邻 lane 读相邻下标（合并访存）能显著抬高带宽；LDS 要注意同一 wave 的地址排布避免 bank 冲突；WMMA 让整排 lane 协作算矩阵、比通用 VALU 快，但布局是 gfx12 定死的。
+- 这些概念的具体优化，分别在 Part 2 的第 8/9/11/12 章结合真实算子展开。至此入门篇的硬件心智模型就完整了；下一章我们跑通第一个真正的 GPU 程序 vector add，并建立 Roofline 心智模型。
+
+## 自我检验
+
+读完本章，你应该能：
+
+1. 能说清 VGPR、SGPR、LDS 各自存什么，以及为什么占用率取决于「哪种资源先用光」、为什么不是越高越好。
+2. 能区分寄存器驻留值、显式 LDS 访问和全局访存这三类操作，并说明为什么 LDS 不是 cache。
+3. 能区分规格容量、逻辑字节和物理 GDDR6 流量这三个概念。
+4. 能解释为什么合并访存（连续下标）能抬高带宽，以及把下标打散为什么会掉到约 1/8。
+5. 能说明 LDS bank 冲突为什么发生（同一 wave 挤同一个 bank），以及 stride 错开为什么能缓解。
+6. 能说出 WMMA 相对普通 VALU 快在哪里、代价是什么，以及它为什么不能等同于 rocBLAS 或理论峰值。
 
 ## 延伸阅读
 
-- [ROCm HIP Documentation](https://rocm.docs.amd.com/projects/HIP/en/latest/)
-- [PyTorch CUDA semantics](https://docs.pytorch.org/docs/stable/notes/cuda.html)
-- [ROCm System Management Interface](https://rocm.docs.amd.com/projects/rocm_smi_lib/en/latest/)
+- [ROCm GPU specifications](https://rocm.docs.amd.com/en/latest/reference/gpu-specs.html)：核对 `gfx1201` 的寄存器、LDS 与各级缓存容量。
+- [AMD Radeon RX 9070 XT 产品规格](https://www.amd.com/en/products/graphics/desktops/radeon/9000-series/amd-radeon-rx-9070xt.html)：显存容量、位宽、理论板卡带宽与理论计算规格。
+- [GPUOpen: Using the Matrix Cores of AMD RDNA 4 architecture GPUs](https://gpuopen.com/learn/using_matrix_core_amd_rdna4/)：仅 gfx12 的 WMMA fragment layout 与 intrinsic 示例。
+- 选做实验：[`code/part0-intro/chapter3/`](https://github.com/datawhalechina/hello-gpu/tree/dev/code/part0-intro/chapter3)（global_memory_access / lds_bank_conflict / rdna4_wmma 受控对照）。
+- 实战展开：[第 8 章 Element-Wise](../../part2-kernels/chapter8/index.md)、[第 9 章 Reduction](../../part2-kernels/chapter9/index.md)、[第 11 章 GEMM](../../part2-kernels/chapter11/index.md)、[第 12 章 Attention/Fusion](../../part2-kernels/chapter12/index.md)。

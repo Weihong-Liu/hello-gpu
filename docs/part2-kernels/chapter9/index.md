@@ -1,474 +1,307 @@
 ---
-title: "第9章 Normalization：归一化算子"
-description: "Hello GPU 第9章 · 以行级 Softmax 为例，学习数值稳定与逐元素/归约融合"
+title: "第9章 Reduction：归约算子"
+description: "Hello GPU 第9章 · 以 Sum Reduction 为例，学习跨线程协作、LDS 与 Wave Shuffle"
 ---
 
-# 第9章 Normalization：归一化算子
+# 第9章 Reduction：归约算子
 
 ## 本章目标、前置知识与产物
 
-> Softmax 看起来只是“取指数再除以总和”，实际却把逐元素计算、两种归约和数值稳定性放进了同一行数据里。它非常适合用来学习融合：究竟少了哪次 launch、哪块中间内存，又付出了什么同步与资源代价？
+> 第 8 章的 Vector Add 可以让每个输出位置独立完成。本章撤掉这个前提：`N` 个输入要共同产生一个标量。我们从一棵能手算的求和树出发，分别用 HIP 与 Triton 实现 Sum Reduction，并把“线程局部和、组内合并、跨组合并”对齐成同一套心智模型。
 
-第 7 章的 Vector Add 中，每个输出只依赖同位置输入；第 8 章开始讨论多个输入共同得到一个结果。Softmax 把两者接起来：一行先求最大值，再逐元素取指数，再求和，最后逐元素归一化。
+本章默认你已经会启动 HIP kernel、理解 block/thread，并能读懂 Triton 的 program、tile 与 mask。第 5–7 章已经介绍 GPU event 与 `rocprofv3`，这里直接复用这些工具，不重复安装过程。
 
-学完本章，你应该能够：
+学完后，你应该能回答四个问题：
 
-- 从二维张量上准确写出“逐行 Softmax”的语义；
-- 用手算解释为什么必须先减去行最大值；
-- 把 Softmax 拆成 `max → exp → sum → normalize` 四个基本模式；
-- 读懂 HIP 三 kernel baseline 与 block+LDS 融合版的数据流；
-- 读懂 Triton“一行一个 program”、mask、`BLOCK_SIZE` 与 `num_warps`；
-- 用正确性、GPU event 和 kernel trace 区分事实、假设与待验证结论。
+1. 为什么归约不能像逐元素算子一样让线程各写各的；
+2. `__syncthreads()` 在 LDS 树中保护了什么数据依赖；
+3. 局部累加、Wave Shuffle 和二阶段 partial 分别减少了哪一层协作成本；
+4. HIP 与 Triton 的源码层次不同，为什么仍能映射到同一棵归约树。
 
-本章配套代码位于：
+配套代码位于 `code/part2-kernels/chapter9/`。HIP、Triton、边界正确性、3 个独立正式进程和逐实现 `rocprofv3` trace 均已在 Radeon RX 9070 XT 上完成；本章只发布与 evidence 绑定的当前 shape 结论。
 
-```text
-code/part2-kernels/chapter9/
-├── run_all.sh
-├── softmax_hip.hip
-└── softmax_triton.py
+## 9.1 从“每个输出独立”到“大家合成一个结果”
+
+Sum Reduction 的定义很短：
+
+$$
+y = \sum_{i=0}^{N-1} x_i
+$$
+
+但它与 Vector Add 的依赖关系完全不同。Vector Add 的 `C[i]` 只依赖 `A[i]` 和 `B[i]`；Reduction 的唯一输出 `y` 依赖所有输入。若两个 GPU 线程同时执行普通的：
+
+```cpp
+*output += input[index];
 ```
 
-::: warning 首版实验状态
-本章已经在 Radeon RX 9070 XT、ROCm 7.13、原生 Ubuntu 24.04 上完成边界正确性、3 个独立正式进程和逐实现 profiling。下文的性能结论只对应 `4096×1024` FP32 与已提交 evidence，不外推到其他列数或 dtype。
-:::
+它们会先后经历“读旧值、加法、写新值”。两个线程可能读到同一个旧值，后写入的结果覆盖先写入的结果，这就是数据竞争。并行归约首先要解决的不是“怎样更快”，而是“怎样让多方更新不丢失”。
 
-## 9.1 逐行 Softmax 到底算什么
+常见归约不只有 sum：
 
-### 9.1.1 先固定轴与形状
+| 算子 | 输出 | 合并操作 | 还要保存什么 |
+| ---- | ---- | ---- | ---- |
+| Sum | 一个和 | `a + b` | 通常只保存数值 |
+| Max | 一个最大值 | `max(a, b)` | 只求 max 时保存数值 |
+| Argmax | 最大值及位置 | 比较后选择一对 `(value, index)` | 数值与下标必须一起移动 |
 
-设输入 `X` 是一个 `R × C` 的 FP32 矩阵。对每一行 `r`，Softmax 沿列维度独立计算：
+本章只实现 FP32 Sum。Max 可以沿用树的结构，但要把加法换成 `max`，并把越界位置的单位元从 `0` 换成负无穷；Argmax 则需要同时归约值和下标。
 
-$$
-Y_{r,c} = \frac{e^{X_{r,c}}}{\sum_{j=0}^{C-1}e^{X_{r,j}}},
-\qquad 0 \le r < R,\ 0 \le c < C
-$$
+## 9.2 手算一棵归约树
 
-“逐行”有两个重要含义：
-
-1. 同一行的所有输出共享同一个分母，所以列之间不是独立的；
-2. 不同行之间互不依赖，所以行可以并行。
-
-每行输出还有两个可检查的不变量：
-
-$$
-Y_{r,c} \ge 0, \qquad \sum_{c=0}^{C-1}Y_{r,c} \approx 1
-$$
-
-这里写“约等于”是因为 FP32 加法顺序会影响最后几个比特。实现不能只检查逐元素误差，还应该检查每行和是否接近 1。
-
-### 9.1.2 用三个数手算
-
-取一行 logits：
+先求下面 8 个数的和：
 
 ```text
-X = [2, 1, 0]
+x = [3, 1, 7, 0, 4, 1, 6, 2]
 ```
 
-先取指数：
+串行写法形成一条长度为 8 的依赖链：
 
 ```text
-exp(X) ≈ [7.3891, 2.7183, 1.0000]
-sum    ≈ 11.1074
+0 → 3 → 4 → 11 → 11 → 15 → 16 → 22 → 24
 ```
 
-再除以总和：
+后一次加法必须等待前一次结束。树形写法先并行合并相邻元素：
 
 ```text
-softmax(X) ≈ [0.6652, 0.2447, 0.0900]
+第 0 层： 3   1   7   0   4   1   6   2
+           \ /     \ /     \ /     \ /
+第 1 层：   4       7       5       8
+             \     /         \     /
+第 2 层：      11              13
+                  \          /
+第 3 层：             24
 ```
 
-三个输出都非负，和约等于 1。最大的 logit 得到最大概率，但 Softmax 没有把其他位置直接变成 0。
-
-### 9.1.3 加同一个常数，结果不变
-
-对一行所有元素同时减去常数 `a`：
-
-$$
-\frac{e^{X_c-a}}{\sum_j e^{X_j-a}}
-= \frac{e^{X_c}/e^a}{\sum_j e^{X_j}/e^a}
-= \frac{e^{X_c}}{\sum_j e^{X_j}}
-$$
-
-这条“平移不变性”是稳定 Softmax 的依据。我们可以选择最有利的 `a`，而不改变数学结果。
-
-## 9.2 为什么直接取指数会溢出
-
-### 9.2.1 大正数：`inf / inf` 不是概率
-
-考虑：
+两种写法都执行 7 次加法，但树只有 `log2(8)=3` 轮依赖。GPU 并不是让一棵无限大的树在一个 block 中完成；更常见的层次是：
 
 ```text
-X = [1000, 1001, 1002]
+每个线程累加若干输入
+→ 一个 wave 合并线程局部和
+→ 一个 block 合并多个 wave
+→ 每个 block 写一个 partial
+→ 另一次 dispatch 合并所有 partial
 ```
 
-FP32 最大有限值约为 `3.4 × 10^38`，其自然对数约为 `88.7`。`exp(1000)` 远远超过这个范围。直接计算时，三个指数都会溢出成 `inf`：
+当 `N` 不是 2 的幂时，不需要补写真实输入。只要把越界位置当成加法单位元 `0`，树仍然成立。例如 `N=6`、逻辑 tile 大小为 8 时，最后两个位置加载 `0` 即可。
 
-```text
-exp(X) = [inf, inf, inf]
-sum    = inf
-output = [inf/inf, inf/inf, inf/inf] = [NaN, NaN, NaN]
-```
+## 9.3 先固定正确性和测量口径
 
-这不是“小误差”，而是结果完全失效。
+### 9.3.1 浮点加法不满足结合律
 
-### 9.2.2 减最大值后手算一次
+实数中 `(a+b)+c = a+(b+c)`，有限精度浮点数中却不保证相等。不同 block 数、树形顺序或 Wave Shuffle 都可能改变舍入顺序，因此并行归约通常不能用 bitwise equality 与串行 FP32 结果比较。
 
-选择 `a = max(X) = 1002`：
+本章程序采用下面的裁判规则：
 
-```text
-X - max(X)       = [-2, -1, 0]
-exp(X - max(X))  ≈ [0.1353, 0.3679, 1.0000]
-sum              ≈ 1.5032
-output           ≈ [0.0900, 0.2447, 0.6652]
-```
-
-减最大值以后，最大的指数一定是 `exp(0)=1`，其余指数落在 `(0, 1]`。这消除了大正数指数溢出；分母至少包含一个 1，也不会因为所有项都下溢为 0 而变成 0。
-
-### 9.2.3 大负数同样需要稳定公式
-
-对 `[-1002, -1001, -1000]` 直接取指数，三个值都可能下溢为 0，最后得到 `0/0`。减去最大值 `-1000` 后仍然得到 `[-2,-1,0]`，所以结果与上一例相同。
-
-因此，本章所有实现都固定使用：
-
-$$
-m_r = \max_j X_{r,j}
-$$
-
-$$
-s_r = \sum_j e^{X_{r,j}-m_r}
-$$
-
-$$
-Y_{r,c} = \frac{e^{X_{r,c}-m_r}}{s_r}
-$$
-
-::: tip 稳定公式解决什么，不解决什么
-减最大值解决的是有限输入下的指数范围问题。若输入本身已经含有 `NaN` 或正负无穷，需要单独定义传播策略；本章程序的输入契约是“有限 FP32 logits”。
-:::
-
-## 9.3 拆成四种基本模式
-
-把稳定 Softmax 拆开，数据依赖会更清楚：
-
-| 阶段 | 数学操作 | 模式 | 每行输出规模 |
-| ---- | ---- | ---- | ----: |
-| 1. max | `m = max(x)` | Reduction | 1 |
-| 2. exp | `p[c] = exp(x[c] - m)` | Element-Wise | `C` |
-| 3. sum | `s = sum(p)` | Reduction | 1 |
-| 4. normalize | `y[c] = p[c] / s` | Element-Wise | `C` |
-
-这四步带来两个共享值：行最大值 `m` 与行和 `s`。不同实现的核心差别不是公式，而是：
-
-- `m`、`s` 与中间指数 `p` 放在全局内存、寄存器还是 LDS；
-- 一行由一个线程、一个 block，还是一个 Triton program 负责；
-- 四个逻辑阶段要启动几次 kernel；
-- 两次归约如何让多个线程协作。
-
-### 9.3.1 一个直观但昂贵的多 kernel 数据流
-
-```text
-input[R,C]
-   │
-   ├─ kernel 1: row max ───────────────> row_max[R]
-   │
-   ├─ kernel 2: exp + row sum ─────────> exp_tmp[R,C] + row_sum[R]
-   │
-   └─ kernel 3: normalize(exp_tmp/sum) ─> output[R,C]
-```
-
-这个布局容易检查：每个阶段都有可见中间结果。但它需要多次 launch，并把 `exp_tmp` 完整写入再读回全局内存。
-
-### 9.3.2 融合不等于“所有东西都只读一次”
-
-本章 HIP 融合版用一个 block 完成一行：
-
-```text
-一行 input
-  → 每线程局部 max → LDS 归约 max
-  → 每线程局部 exp sum → LDS 归约 sum
-  → 写 output
-```
-
-它不分配 `exp_tmp`，也只 launch 一次。不过教学实现为了避免把任意长的一行全部放进 LDS，会在三个阶段重新读取输入并重新计算最后一次 `exp`。所以准确结论是：**它消除了全局中间指数写回和两次 launch，而不是保证输入只读一次。**
-
-## 9.4 先固定正确性与计时口径
-
-### 9.4.1 同一份裁判规则
-
-HIP 与 Triton 程序采用相同的实验契约：
-
-| 项目 | 规则 |
+| 项目 | 本章固定方式 |
 | ---- | ---- |
-| 语义 | 二维 FP32 输入，沿最后一维逐行 Softmax |
-| 参考 | HIP 使用 CPU 稳定 Softmax；Triton 使用 CPU `torch.softmax(..., dim=1)` |
-| 输入 | 确定性有限值，并按行叠加 `+1000`、`-1000`、`0` 测试平移稳定性 |
-| 元素误差 | `max_abs_error <= 2e-5` |
-| 行和误差 | `max(abs(sum(row)-1)) <= 2e-5` |
-| 检查时机 | 正式计时前一次，计时后一次 |
-| 计时范围 | 只包围候选 kernel dispatch，不含分配、CPU reference 和拷贝 |
-| 输出 | 与第 7 章一致的 `ENV` 与 `RESULT key=value` 行 |
+| 输入类型 | FP32 |
+| 教学输入 | 交替的 `+1` 与 `-1`，`seed` 决定首项符号 |
+| CPU reference | Host 侧用 FP64 累加同一输入 |
+| 容差 | 绝对误差不超过 `1e-3` |
+| precheck | 正式计时前运行一次并检查 |
+| postcheck | 正式计时后再次检查 |
+| 边界长度 | `1, 31, 32, 33, 255, 256, 257, 1027` |
 
-不同归约树会改变 FP32 加法顺序，因此 fused 版不应要求逐比特等于串行 CPU 参考。容差是正确性门槛，不是“误差越接近门槛越好”的性能指标。
+交替的整数输入是有意选择的：在默认 shape 下，它让 FP32 加法保持精确可检查，便于把“索引、同步或 partial 丢失”与普通舍入差异分开。它**不是**通用数值稳定性证明。把练习改成随机宽动态范围数据时，应重新定义能解释的误差标准，并与 PyTorch/FP64 reference 一起报告。
 
-### 9.4.2 为什么要测非二次幂列数
+### 9.3.2 测量的是完整归约，不是单个漂亮的 kernel
 
-真实列数不总是 `32`、`256` 或 `1024`。本章脚本覆盖：
+配套程序用 GPU event 计时：
 
-```text
-1, 31, 32, 33, 255, 257 columns
-```
+- HIP atomic/LDS 计入输出清零与归约 kernel；
+- HIP two-stage 计入输出清零、partial kernel 和最终归约 kernel；
+- Triton 两版都计入 program partial 与 second reduction 两次 dispatch；
+- 分配、Host 输入生成和 Host-to-Device 拷贝不计时。
 
-这些 shape 分别触发单元素行、wave 边缘、跨 wave、block 边缘和非二次幂尾部。HIP 用 `column < columns` 的循环条件保护尾部；Triton 用 mask 把补齐位置排除在 load/store 之外。
+`RESULT` 行中的 `logical_bandwidth_gbs` 按 `(N × 4 Byte + 4 Byte) / median time` 计算，只表示输入与最终输出的**逻辑字节**。它没有计入 atomic 的读改写流量、LDS 访问或 partial buffer 读写，不能冒充显存控制器实际带宽。
 
-## 9.5 HIP baseline：把三次 dispatch 看清楚
+## 9.4 HIP atomic baseline：先得到最短的正确版本
 
-配套文件 `softmax_hip.hip` 中的 `hip-baseline-3kernel` 是稳定的多 kernel baseline。它不是性能模板，而是让阶段边界清晰可见的正确性起点。
-
-### 9.5.1 Kernel 1：每个线程串行求一行最大值
+最直接的办法是让每个线程把一个输入原子加到同一地址：
 
 ```cpp
-const std::size_t row =
-    static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-if (row >= rows) return;
-
-float maximum = negative_infinity;
-for (std::size_t column = 0; column < columns; ++column) {
-    maximum = fmaxf(maximum, input[row * columns + column]);
-}
-row_max[row] = maximum;
-```
-
-一个 thread 负责一整行，因此不需要线程间同步。这种映射非常直白，但长行只有一个 thread 工作，不能利用行内并行。
-
-### 9.5.2 Kernel 2：计算指数并串行累加
-
-第二个 kernel 读取 `row_max[row]`，把稳定指数写入 `exp_tmp[R,C]`，同时得到 `row_sum[row]`：
-
-```cpp
-float sum = 0.0F;
-for (std::size_t column = 0; column < columns; ++column) {
-    const float value = expf(input[base + column] - row_max[row]);
-    exponentials[base + column] = value;
-    sum += value;
-}
-row_sum[row] = sum;
-```
-
-`exp_tmp` 是 baseline 最显眼的全局中间张量。它让第三阶段简单，也让 profiler 能分别看到各阶段；代价等待实测量化。
-
-### 9.5.3 Kernel 3：逐元素归一化
-
-最后一个 kernel 回到常见的一线程一元素映射：
-
-```cpp
-if (index < rows * columns) {
-    output[index] = exponentials[index] / row_sum[index / columns];
+__global__ void atomic_sum_kernel(const float* input,
+                                  std::size_t size,
+                                  float* output) {
+    const std::size_t index =
+        static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (index < size) {
+        atomicAdd(output, input[index]);
+    }
 }
 ```
 
-这里的 `index / columns` 把扁平元素下标映射回行号。由于总元素数可能不是 block size 的整数倍，`index < elements` 仍然不能省略。
+`atomicAdd` 保证一次读改写不会被另一线程拆开覆盖，所以它解决了正确性问题。代价也很直观：所有有效线程都竞争同一个全局地址。这个版本的价值是建立最短 baseline，而不是把 atomic 描述成必然慢到不可用。
 
-### 9.5.4 baseline 的价值与局限
+Host 侧每次启动前必须把输出清零。若忘记清零，第 `k` 次 benchmark 会继续叠加前 `k-1` 次的结果；kernel 本身没有越界，结果仍然是错的。配套程序把 `hipMemsetAsync` 放在 event 区间内，因为清零是这条算法路径不可缺少的一部分。
 
-它准确表达了稳定公式，并提供可观察的中间边界；同时存在明显的待验证成本：
+运行单个版本：
 
-- 三次 kernel launch；
-- 一次完整 `exp_tmp` 写入和读回；
-- 两个归约阶段由单线程串行完成；
-- 行很少时，并行度可能不足。
-
-这些是由源码可以确认的结构事实。它们是否主导总时间、各自占多少比例，必须等 kernel trace 和实测数据回答。
-
-## 9.6 HIP 行融合：一个 block 完成一行
-
-`hip-fused-block-lds` 把一行分给一个 HIP block。假设 `block=256`，线程 `t` 访问：
-
-```text
-column = t, t + 256, t + 512, ...
+```bash
+cd code/part2-kernels
+source ./activate-rocm.sh
+hipcc --offload-arch=gfx1201 -O3 -std=c++17 \
+  chapter9/reduction_hip.hip -o /tmp/reduction_hip
+/tmp/reduction_hip --version atomic --size 1027 \
+  --block 256 --warmup 0 --repeat 1
 ```
 
-因此相邻线程在每一轮访问相邻列；`columns` 不是 256 的整数倍时，最后一轮自然由循环条件裁掉。
+成功信号不是某个时间，而是对应 `RESULT` 同时出现 `correct=OK precheck=OK postcheck=OK`。
 
-### 9.6.1 第一次归约：局部 max → LDS max
+## 9.5 HIP LDS：把全局竞争缩小到每个 block 一次
 
-每个线程先在寄存器中得到自己的 `local_maximum`，再把它写到动态 LDS：
+下一个版本让一个 block 先在 LDS（HIP 的 `__shared__`）中完成局部树归约，只让 thread 0 把 block sum 原子加到全局输出：
 
 ```cpp
-shared[lane] = local_maximum;
+extern __shared__ float shared[];
+const unsigned int thread = threadIdx.x;
+const std::size_t index =
+    static_cast<std::size_t>(blockIdx.x) * blockDim.x + thread;
+
+shared[thread] = index < size ? input[index] : 0.0f;
 __syncthreads();
 
-for (unsigned int stride = blockDim.x / 2; stride > 0; stride /= 2) {
-    if (lane < stride) {
-        shared[lane] = fmaxf(shared[lane], shared[lane + stride]);
+for (unsigned int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+    if (thread < stride) {
+        shared[thread] += shared[thread + stride];
     }
     __syncthreads();
 }
+
+if (thread == 0) {
+    atomicAdd(output, shared[0]);
+}
 ```
 
-每轮活动线程减半，最终 `shared[0]` 是行最大值。`__syncthreads()` 保护的是整个 block：下一轮不能在上一轮所有写入完成前开始。
+以 256 threads/block 为例，第一轮由前 128 个线程把后 128 个值合并进来，之后活动线程依次缩成 `64、32、16……1`。每轮后的 `__syncthreads()` 有两个职责：
 
-### 9.6.2 第二次归约：局部 sum → LDS sum
+1. 确保本轮所有 LDS 写入都完成，下一轮才能读取；
+2. 确保仍在活动的线程与已经退出本轮 `if` 的线程一起到达同一屏障。
 
-拿到最大值后，每个线程沿自己的列序列计算稳定指数并累加到 `local_sum`。同一块 LDS 被复用，再执行一次加法树归约，得到分母。
+因此屏障必须放在条件分支外。若只有 `thread < stride` 的线程执行 `__syncthreads()`，同一个 block 中其他线程不会到达屏障，行为未定义，甚至可能挂住。
 
-### 9.6.3 最后写回
+这个版本把全局 atomic 次数从“每个元素一次”降为“每个 block 一次”，但同时增加 LDS 读写和多轮 block 同步。源码只能说明成本被重新分层，不能在远端测量前断言净收益。
 
-每个线程再次沿相同列序列计算：
+## 9.6 HIP 局部累加、Wave Shuffle 与二阶段 partial
+
+LDS 版仍然让每个 thread 只加载一个元素。`hip-two-stage` 改成 grid-stride loop：先让线程在寄存器里累加多个输入，再进行组内协作。
 
 ```cpp
-output[base + column] =
-    expf(input[base + column] - maximum) / denominator;
+const std::size_t first =
+    static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+const std::size_t step =
+    static_cast<std::size_t>(gridDim.x) * blockDim.x;
+
+float local = 0.0f;
+for (std::size_t index = first; index < size; index += step) {
+    local += input[index];
+}
 ```
 
-这里重新计算 `exp` 是有意的空间—计算权衡：它避免分配 `R×C` 的全局 `exp_tmp`，也不要求一整行都能塞入 LDS。重算是否值得，要由目标 shape 上的实测决定。
+这一步有两个作用：减少第一阶段 block 数，并把一部分加法变成不需要同步的线程私有工作。默认 grid 取“不超过完整 grid 的 `CU 数 × 8`”；它只是待实验的起点，可用 `--grid` 覆盖，不是硬件通用最优值。
 
-## 9.7 Wave32、LDS 与融合边界
+接着在 wave 内用 shuffle 交换 lane 的寄存器值：
 
-### 9.7.1 当前版本没有使用 wave shuffle
+```cpp
+__device__ float wave_reduce_sum(float value) {
+    for (int offset = warpSize / 2; offset > 0; offset >>= 1) {
+        value += __shfl_down(value, offset);
+    }
+    return value;
+}
+```
 
-目标 GPU 以 Wave32 执行线程，但当前融合 kernel 使用的是**整个 block 的 LDS 树归约**。即使一个 block 包含多个 wave，`__syncthreads()` 也会让它们在每一轮正确会合。
+一个 wave 的 lane 天然按锁步方式执行，shuffle 可以直接读取另一个 lane 的值，不必为每一轮都写 LDS 再做 block 屏障。不同 wave 仍需要协作，因此代码让每个 wave 的 lane 0 写一个 `wave_sums[wave]`，同步一次，再让第一个 wave 合并这些 wave sums。
 
-这意味着不能把当前版本描述成“wave-level Softmax”。后续可以先在每个 wave 内用 shuffle 归约，再让少量 wave partial 进入 LDS；那是新的受控实验，不属于本章首版代码。
-
-### 9.7.2 为什么 block 必须是二次幂
-
-当前循环从 `blockDim.x / 2` 逐轮减半，并配对 `lane` 与 `lane + stride`。为使所有槽位都被归约，CLI 明确要求：
+第一阶段最终写出 `grid` 个 partial；第二阶段复用同一个局部归约 kernel，以一个 block 对 partial buffer 做 grid-stride 累加并写出最终标量：
 
 ```text
-block ∈ {1, 2, 4, ..., 1024}
+N 个输入
+  └─ stage 1: grid 个 block → grid 个 partial
+       └─ stage 2: 1 个 block → 1 个输出
 ```
 
-列数本身不需要是二次幂。没有真实列可读的线程把 max 初值贡献为负无穷，把 sum 初值贡献为 0，所以 `C=33` 配 `block=256` 仍然正确。
+二阶段避免了 stage 1 的 block 在同一个 kernel 内尝试“全局同步”。普通 kernel 中没有可靠的跨 block 屏障；结束一次 dispatch 再启动下一次，本身就是清晰的全局阶段边界。
 
-### 9.7.3 LDS 容量不是唯一边界
+## 9.7 Triton：program partial + second reduction
 
-当前 kernel 只申请 `block × sizeof(float)` 的动态 LDS；`block=256` 时逻辑申请量是 1024 Byte。这个数能从源码计算，但 occupancy、VGPR、scratch 和实际驻留 block 数不能只靠源码断言，需读取编译/profile 结果。
-
-不同 shape 还会碰到不同边界：
-
-| Shape 特征 | 当前映射可能出现什么 | 应观察什么 |
-| ---- | ---- | ---- |
-| `C << block` | 很多线程只贡献归约单位元 | 有效 lane 比例、launch/同步占比 |
-| `C ≈ block` | 每线程约处理一个元素 | LDS 归约成本与访存 |
-| `C >> block` | 每线程循环多次 | `exp` 吞吐、寄存器与循环成本 |
-| `R` 很小 | 可启动的 block 很少 | GPU 是否吃满、短任务延迟 |
-| `R` 很大 | 行级 block 数充足 | 总吞吐与内存访问 |
-
-“融合更多”不自动等于“更快”。融合可能减少全局中间写回与 launch，也可能增加单 kernel 的同步、寄存器压力或重复计算。
-
-## 9.8 Triton：一行对应一个 program
-
-Triton 版本把 HIP 中“一个 block 协作完成一行”的意图写成“一行一个 program”：
+Triton 不要求我们手写 lane shuffle。第一阶段让每个 program 用 grid-stride 方式读取多个 tile，在寄存器向量中累加，再由 `tl.sum` 得到一个 program partial：
 
 ```python
-row = tl.program_id(axis=0)
-offsets = tl.arange(0, BLOCK_SIZE)
-valid = offsets < columns
-
-logits = tl.load(
-    input_ptr + row * input_row_stride + offsets,
-    mask=valid,
-    other=-float("inf"),
-)
-maximum = tl.max(logits, axis=0)
-numerator = tl.exp(logits - maximum)
-denominator = tl.sum(numerator, axis=0)
-probabilities = numerator / denominator
-tl.store(output_ptr + row * output_row_stride + offsets,
-         probabilities, mask=valid)
+@triton.jit
+def program_partial_kernel(input_ptr, partial_ptr, size, num_programs,
+                           BLOCK_SIZE: tl.constexpr):
+    pid = tl.program_id(0)
+    acc = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
+    first = pid * BLOCK_SIZE
+    step = num_programs * BLOCK_SIZE
+    for tile_start in tl.range(first, size, step):
+        offsets = tile_start + tl.arange(0, BLOCK_SIZE)
+        values = tl.load(input_ptr + offsets,
+                         mask=offsets < size, other=0.0)
+        acc += values
+    tl.store(partial_ptr + pid, tl.sum(acc, axis=0))
 ```
 
-### 9.8.1 program 不等于硬件线程
+这里的 `acc` 是一个 `BLOCK_SIZE` 长度的逻辑张量。循环的每一轮把同一 lane 位置的新元素加进 `acc`，循环结束后 `tl.sum` 再沿 tile 维度合成一个标量。尾部 mask 把越界元素替换为加法单位元 `0`。
 
-grid 是 `(rows,)`，所以每行启动一个 program instance。这个 program 在源码里操作一个长度为 `BLOCK_SIZE` 的向量；向量怎样映射到底层线程与指令，由 Triton 编译器完成。
+第二个 kernel 只启动一个 program，加载 bounded partial buffer，再做一次 `tl.sum`：
 
-因此下面两句话不能混用：
-
-```text
-HIP:    一个 block 有 blockDim.x 个显式线程
-Triton: 一个 program 有 BLOCK_SIZE 个逻辑位置
+```python
+offsets = tl.arange(0, SECOND_BLOCK_SIZE)
+partials = tl.load(partial_ptr + offsets,
+                   mask=offsets < num_partials, other=0.0)
+tl.store(output_ptr, tl.sum(partials, axis=0))
 ```
 
-### 9.8.2 为什么补到下一个二次幂
+配套脚本保留两个版本，算法语义和 block size 相同，只改变第一阶段 program 数上限：
 
-若 `columns=257`，t0 选择 `BLOCK_SIZE=512`。逻辑下标 `0–256` 有效，`257–511` 是填充位置。load 时用 `-inf` 填充：
+| 版本 | 默认第一阶段 program 上限 | 每个 program 的工作趋势 | 第二阶段 |
+| ---- | ----: | ---- | ---- |
+| `triton-t0` | 1024 | 较少的 grid-stride 轮次 | 一个 program 合并 partial |
+| `triton-t1-local` | 256 | 更多线程局部累加轮次 | 一个 program 合并 partial |
 
-- `max(real values, -inf)` 不改变最大值；
-- `exp(-inf - maximum)=0`，不改变分母；
-- store mask 防止向行尾之外写入。
+真实 program 数是 `min(ceil(N / BLOCK_SIZE), 上限)`，因此小 shape 下两版可能完全相同。`t1` 的上限可用 `--programs` 调整。program 更少可能降低 partial 数，也可能减少并行度或增加寄存器压力；这仍然是要由 profile 回答的问题。
 
-这就是 Triton 对非二次幂列数的边界处理。mask 不只是防越界，它还为归约提供了正确的单位元。
-
-### 9.8.3 t0 与 t1 的受控参数实验
-
-脚本至少运行两种配置：
-
-| 版本 | 默认 `BLOCK_SIZE` | 默认 `num_warps` | 想比较什么 |
-| ---- | ---- | ----: | ---- |
-| `triton-t0-compact` | `next_power_of_2(cols)` | 4 | 覆盖一行所需的最小逻辑块 |
-| `triton-t1-wide` | 可行时为 t0 的 2 倍，最大 65536 | 8 | 更多填充位置与更多 warps 的组合 |
-
-这是一个配置对照，不是“t1 一定更优”。更大的 block 可能改变生成代码、寄存器使用和调度，也会让更多无效位置参与逻辑计算；更多 warps 可能提高并行性，也可能增加资源压力。
-
-若想单独控制 t1：
+运行单个 Triton 版本：
 
 ```bash
-python chapter9/softmax_triton.py \
-  --version t1 --rows 4096 --cols 1024 \
-  --t1-block 2048 --t1-warps 8 --warmup 10 --repeat 50
+cd code/part2-kernels
+source ./activate-rocm.sh
+python chapter9/reduction_triton.py --version t1 --size 1027 \
+  --block 1024 --programs 256 --warmup 0 --repeat 1
 ```
 
-当前单 program 实现要求 `cols <= 65536`。更长的行需要分块/在线 Softmax 或多阶段算法，不能简单继续扩大 `BLOCK_SIZE`。
+在 ROCm PyTorch 中仍使用 `device="cuda"`、`torch.cuda.Event` 等兼容接口；可通过 `torch.version.hip` 和程序打印的 `ENV` 行确认实际后端。
 
-## 9.9 稳定性与边界测试矩阵
+## 9.8 把 HIP 与 Triton 放回同一棵树
 
-不要只拿随机小数跑一次。下面的矩阵分别针对数学稳定性、mask 和并行边界：
+| 归约层次 | HIP 表达 | Triton 表达 |
+| ---- | ---- | ---- |
+| 输入边界 | 标量 `if (index < size)` | load mask，越界填 `0` |
+| 线程/program 私有工作 | FP32 寄存器 `local` | tile 张量 `acc` |
+| wave/tile 内合并 | `__shfl_down` | `tl.sum` 交给编译器降低 |
+| block/program 输出 | 一个 block 写一个 partial | 一个 program 写一个 partial |
+| 跨组同步 | 结束 stage 1 dispatch | 结束 stage 1 dispatch |
+| 最终合并 | 第二次 HIP kernel | `second_reduction_kernel` |
 
-| 输入或 shape | 不稳定公式的风险 | 稳定实现应满足什么 | 当前脚本 |
-| ---- | ---- | ---- | ---- |
-| `[1000,1001,1002]` | `exp` 溢出，出现 NaN | 有限，且等价于 `[-2,-1,0]` | 用 `+1000` 行覆盖 |
-| `[-1002,-1001,-1000]` | 全部下溢为 0，出现 `0/0` | 有限，且等价于 `[-2,-1,0]` | 用 `-1000` 行覆盖 |
-| `x` 与 `x+常数` | 实现若不稳定会分叉 | 两行结果在容差内一致 | 三种行偏移可扩展检查 |
-| `C=1` | 分母与分子相同 | 输出严格接近 1 | 自动覆盖 |
-| `C=31/32/33` | wave 边缘与 mask 错误 | 无越界，行和接近 1 | 自动覆盖 |
-| `C=255/257` | block/二次幂尾部错误 | 所有列与参考一致 | 自动覆盖 |
-| `C=4097` | 更长的线程循环/逻辑块 | 正确；性能结论待测 | 建议练习 |
-| 相同最大值出现多次 | max 归约次序变化 | 概率相等且有限 | 建议练习 |
-
-当前程序只实现 FP32。FP16/BF16 练习必须明确“输入/输出 dtype”和“max、sum 的累加 dtype”；不能只把指针类型替换后沿用 FP32 误差阈值。
-
-## 9.10 HIP 与 Triton 对照
-
-| 问题 | HIP 三 kernel baseline | HIP block+LDS fused | Triton 一行一 program |
-| ---- | ---- | ---- | ---- |
-| 行的分工 | 一个 thread 串行处理一行归约 | 一个 block 协作处理一行 | 一个 program 描述一行逻辑向量 |
-| dispatch | 3 | 1 | 1 |
-| 中间指数 | 全局 `exp_tmp[R,C]` | 不保存，最后重算 | program 内逻辑值 |
-| 行 max/sum | 全局 `row_max/row_sum` | LDS 中归约并复用 | `tl.max` / `tl.sum` |
-| 尾部 | 标量循环/元素 `if` | 线程跨步循环条件 | load/store mask |
-| block 限制 | block 控制行线程或元素线程 | 当前树归约要求二次幂 | `BLOCK_SIZE` 覆盖整行且为二次幂 |
-| 显式控制 | grid、thread、LDS、同步 | 同左，且控制归约树 | program、逻辑 block、warps；底层映射由编译器生成 |
-| 适合作为 | 阶段清晰的正确性起点 | 学习融合与协作归约 | 快速表达整行融合与参数实验 |
-
-两条路线最终必须回答同一组问题：
+不要把一个 Triton program 直接等同于一个 HIP block，也不要假设 `BLOCK_SIZE=1024` 就表示启动 1024 个硬件线程。更稳妥的迁移方法是逐层追问：
 
 ```text
-一行交给谁？
-最大值在哪里产生？
-分母在哪里产生？
-中间指数有没有写入全局内存？
-尾部如何排除？
-完整路径怎样计时和验证？
+1. 一个私有执行上下文先读哪些元素？
+2. 私有和在哪里保存？
+3. 组内怎样合并，哪里需要同步？
+4. 每组输出几个 partial？
+5. 谁负责合并所有 partial？
 ```
 
-源码更短不等于运行成本更低，控制更显式也不等于自动更快。目标机器上的 `RESULT` 与 trace 才能决定当前 shape 的结论。
+HIP 暴露 wave、LDS 和 block 屏障，适合研究底层协作；Triton 用 tile 与 `tl.sum` 缩短表达路径，适合快速改变 program 划分。两者都不能跳过边界、reference 和完整两阶段计时。
 
-## 9.11 运行与读取结果
+## 9.9 一键运行与 `rocprofv3` Profiling
 
-### 9.11.1 一次运行全部边界与主 shape
+### 9.9.1 一键入口
 
-在项目根目录执行：
+首次准备 Part 2 环境：
 
 ```bash
 cd code/part2-kernels
@@ -476,158 +309,102 @@ uv sync
 bash chapter9/run_all.sh
 ```
 
-`activate-rocm.sh` 会激活 `code/part2-kernels/.venv` 并暴露其中的 ROCm SDK。`run_all.sh` 随后：
+`run_all.sh` 会激活 `code/part2-kernels/.venv`，默认按 `gfx1201` 编译 HIP，然后依次运行 8 个边界长度与主 shape。输出不写复杂 evidence 目录；本章首版直接以清晰的 `ENV`、阶段标题和 `RESULT` 行作为复跑反馈。
 
-1. 用 `hipcc` 编译 HIP 程序到临时目录；
-2. 对六组边界 shape 运行 HIP 与 Triton 的全部版本；
-3. 对默认 `4096×1024` 主 shape 预热 10 次、计时 50 次；
-4. 每个版本在计时前后检查参考结果；
-5. 退出时删除临时 HIP 二进制。
-
-覆盖默认参数：
+常用覆盖参数：
 
 ```bash
-ROWS=8192 COLS=257 HIP_BLOCK=128 WARMUP=5 REPEAT=20 \
-  bash chapter9/run_all.sh
+GPU_ARCH=gfx1201 SIZE=4194304 BLOCK=256 \
+TRITON_BLOCK=1024 TRITON_PROGRAMS=256 \
+WARMUP=5 REPEAT=20 bash chapter9/run_all.sh
 ```
 
-若只想快速检查主 shape：
+只跑主 shape，可关闭边界循环：
 
 ```bash
-RUN_EDGE_CASES=0 WARMUP=2 REPEAT=5 bash chapter9/run_all.sh
+RUN_EDGE_CASES=0 SIZE=16777216 bash chapter9/run_all.sh
 ```
 
-### 9.11.2 分别运行 HIP 与 Triton
+每条 `RESULT` 都包含实现名、shape、block/grid、stage/partial 数、precheck/postcheck、event 时间、逻辑带宽与绝对误差。发布任何性能表之前，至少保留这些字段以及 GPU、ROCm、PyTorch/Triton 版本。
+
+### 9.9.2 用 kernel trace 核对阶段
+
+先单独编译并进行一次短 precheck，再让 profiler 启动目标进程：
 
 ```bash
 cd code/part2-kernels
-source activate-rocm.sh
+source ./activate-rocm.sh
+mkdir -p chapter9/profiles
 
 hipcc --offload-arch=gfx1201 -O3 -std=c++17 \
-  chapter9/softmax_hip.hip -o /tmp/softmax_hip
+  chapter9/reduction_hip.hip -o /tmp/reduction_hip_ch8
 
-/tmp/softmax_hip --version all --rows 4096 --cols 1024 \
-  --block 256 --warmup 10 --repeat 50
-
-python chapter9/softmax_triton.py --version all \
-  --rows 4096 --cols 1024 --warmup 10 --repeat 50
-```
-
-输出不会内置任何预期毫秒数。应先确认：
-
-```text
-correct=OK precheck=OK postcheck=OK
-```
-
-然后才比较同一 shape、同一 warmup/repeat 下的 `median_ms`。关键字段包括：
-
-| 字段 | 含义 |
-| ---- | ---- |
-| `implementation` | 具体 baseline/fused 或 t0/t1 |
-| `shape` | `rows×cols`，比较时必须相同 |
-| `launches` | HIP 单次逻辑调用的 kernel 数 |
-| `block` / `num_warps` | 当前启动配置 |
-| `timing=gpu-event` | kernel 区间由 GPU event 测量 |
-| `max_abs_error` | 相对参考结果的最大绝对误差 |
-| `max_row_sum_error` | 所有行中最大的归一化和误差 |
-
-## 9.12 用 rocprofv3 看融合发生在哪里
-
-直接运行脚本的可选 profile 路径：
-
-```bash
-cd code/part2-kernels
-RUN_PROFILE=1 WARMUP=2 REPEAT=10 bash chapter9/run_all.sh
-```
-
-它会在 `chapter9/profiles/` 写 HIP 与 Triton 的 kernel trace CSV。也可以对单版本手动采集：
-
-```bash
-rocprofv3 \
-  --kernel-trace \
+rocprofv3 --kernel-trace \
   --output-directory chapter9/profiles \
-  --output-file softmax-hip-fused \
-  --output-format csv \
-  -- /tmp/softmax_hip --version fused --rows 4096 --cols 1024 \
-     --block 256 --warmup 0 --repeat 5
+  --output-file hip-two-stage --output-format csv -- \
+  /tmp/reduction_hip_ch8 --version two-stage --size 16777216 \
+  --block 256 --warmup 0 --repeat 1
 ```
 
-第一次看 trace，先回答下面四个问题：
+Triton 先运行一次以完成 JIT，再 profile 第二次：
 
-1. baseline 的 `row_max_serial`、`row_exp_sum_serial`、`normalize_rows` 是否分别出现？
-2. fused 的一次逻辑调用是否只出现 `softmax_fused_lds`？
-3. 同一版本的单次 dispatch 时间分布是否稳定，是否有明显首次编译/冷启动影响？
-4. profiler 可用字段中，workgroup、LDS、VGPR、scratch 是否与假设一致？不可用字段要明确记为不可用。
+```bash
+python chapter9/reduction_triton.py --version t1 --size 16777216 \
+  --block 1024 --programs 256 --warmup 0 --repeat 1
 
-::: warning 不要把 trace 中的总 dispatch 数误读成算法阶段数
-程序在预检、warmup 和正式 repeat 中会启动 kernel；后检只拷贝并检查最后一次计时结果，不额外启动 Softmax kernel。baseline 每次逻辑调用有 3 个 dispatch，fused 有 1 个；解读总数前先对照 CLI 的 `warmup`、`repeat` 和程序流程。
+rocprofv3 --kernel-trace \
+  --output-directory chapter9/profiles \
+  --output-file triton-t1 --output-format csv -- \
+  python chapter9/reduction_triton.py --version t1 --size 16777216 \
+  --block 1024 --programs 256 --warmup 0 --repeat 1
+```
+
+读 trace 时先验证结构，而不是急着比较总时间：HIP atomic/LDS 每次计时应看到一次主要归约 dispatch，two-stage 应看到 partial 与 final 两类归约 dispatch；Triton 两版也应出现第一阶段和第二阶段。随后再观察 grid、workgroup、LDS、VGPR 与每个 dispatch 的持续时间。
+
+::: tip 正式实验状态
+目标 Radeon RX 9070 XT + ROCm 环境已完成边界检查、3 个独立正式进程与 5 个独立 profile。正文结果来自提交的 curated evidence；原始日志和完整 trace 不跟踪进 Git。
 :::
 
-首轮远端实验建议保存：环境版本、完整命令、原始 `RESULT`、trace 路径和源代码 commit。没有这些信息，单独抄一个毫秒数无法复现。
+## 9.10 练习与验收
 
-## 9.13 练习
+1. 画出 `N=6`、逻辑宽度为 8 的求和树，标出两个越界位置为什么必须填 `0`。
+2. 删除 LDS 循环中的一次 `__syncthreads()`，先写下可能读到旧值的轮次；不要把有数据竞争的版本用于 benchmark。
+3. 把 HIP `--grid` 分别设为 `CU×2、CU×8、CU×16`，保持其他参数不变，记录 partial 数、两阶段时间和 VGPR/LDS；不要只凭 block 更少判断结果。
+4. 把 Triton `--programs` 从 `256` 改成 `128、512`，核对第一阶段 grid 和第二阶段 partial 数，再测量完整两次 dispatch。
+5. 实现 Max Reduction：HIP/Triton 的越界单位元都改成负无穷，并用全负输入验证不能把初值误写成 `0`。
+6. 实现 Argmax：定义相同值时选择较小下标的 tie-break，确保 `(value, index)` 在每一层始终成对移动。
+7. 把输入改成宽动态范围随机 FP32，比较串行 FP32、FP64 reference 与不同归约树的误差，解释为什么“结果不逐 bit 相同”不自动等于错误。
 
-### 练习 1：验证平移不变性
+完成本章不要求某个实现必须最快，但应同时满足：
 
-在 CPU 参考中构造 `x`、`x+1000` 与 `x-1000` 三行，逐元素比较输出。然后故意换成直接 `exp(x)/sum(exp(x))`，记录哪一行首先出现非有限值。
-
-**成功标准：**稳定版本三行在容差内一致；不稳定版本明确暴露 `inf`、0 或 NaN，而不是静默通过。
-
-### 练习 2：记录 shape 扫描，不挑赢家
-
-固定 `rows=4096`，扫描：
-
-```text
-cols = 31, 32, 33, 255, 256, 257, 1024, 4097
-```
-
-记录四个实现的正确性与 median，不删掉“参数变大反而变慢”的结果。
-
-**成功标准：**每条记录都有 shape、实现名、参数、GPU event 时间和校验字段；若某配置编译失败，也原样记录错误与限制。
-
-### 练习 3：只替换 HIP 归约收尾
-
-保持“一 block 一行”和线程访问映射不变，把 LDS 全树归约改为：wave 内 shuffle 得 partial，再用 LDS 合并各 wave partial。
-
-**成功标准：**先证明边界 shape 正确，再用 trace 比较同步、LDS 与资源字段；不能同时改 block、输入或计时次数。
-
-### 练习 4：比较重算与保存指数
-
-为中等列数实现一个保存局部指数的版本。先计算它实际需要的寄存器/LDS 空间，再决定支持的最大 `cols`。
-
-**成功标准：**文档明确写出空间上限和溢出时的处理，不允许越过 LDS 或数组边界。
-
-### 练习 5：扩展到混合精度
-
-输入输出改为 FP16 或 BF16，但 max 与 sum 保留 FP32 累加，并与 PyTorch 参考比较。
-
-**成功标准：**分别报告输入/输出 dtype、累加 dtype、误差阈值与失败 shape；不要沿用本章 FP32 阈值却不解释。
+- 8 个边界长度和主 shape 的所有 `RESULT` 都是 `correct=OK`；
+- 能指出 atomic、LDS、wave shuffle 和二阶段各自处理哪一层竞争；
+- 能从 trace 证明实际 dispatch 数，而不是从源码名字猜；
+- 能复述 event 的计时边界，并明确逻辑带宽不等于物理显存流量；
+- 若某项未运行或失败，实验记录明确写出，不能静默跳过。
 
 ## 正式实验结果
 
-![Chapter 9 Row Softmax 性能对比](./images/softmax-performance.png)
+![Chapter 8 Sum Reduction 性能对比](./images/reduction-performance.png)
 
-主 shape 为 `4096×1024` FP32。HIP 三 kernel baseline 为 `0.744228 ms`，融合 LDS 版为 `0.115781 ms`；Triton compact/wide 分别为 `0.038361/0.060801 ms`。当前 shape 上 `t1-wide` 反而慢于 `t0-compact`，因此“更宽 block/更多 warps”被记录为负结果，而不是默认优化。
+主 shape 为 `N=16,777,216` FP32。`hip-atomic` 的进程 median 中位数为 `34.4608 ms`，`hip-lds` 为 `4.32771 ms`，而二阶段 HIP、Triton t0/t1 位于 `0.0508–0.0599 ms`。这说明全局同地址争用和仅做 block 内归约都是本 shape 的负基线；同时，逻辑带宽不能当作物理显存（GDDR6）流量。
 
-完整记录见 `code/part2-kernels/chapter9/EXPERIMENT.md`。
+完整协议、三进程范围、负结果与证据路径见 `code/part2-kernels/chapter9/EXPERIMENT.md`。
 
 ## 本章小结
 
-- 逐行 Softmax 的列之间共享最大值和分母，行之间可以并行。
-- 直接计算指数会在大正数上溢出、在大负数上下溢；减去行最大值利用平移不变性得到稳定公式。
-- Softmax 可以拆成 `max reduction → exp → sum reduction → normalize`。
-- HIP 三 kernel baseline 把阶段和全局中间张量显式展开；融合版用一个 block、两次 LDS 归约完成一行，并通过重算指数避免 `exp_tmp`。
-- Wave32 是硬件执行背景，但当前 HIP 首版是 block 级 LDS 算法，不应误称为 wave shuffle 优化。
-- Triton 用一个 program 描述一整行，`BLOCK_SIZE` 与 mask 负责逻辑覆盖，`num_warps` 是需要实测的编译/调度参数。
-- 非二次幂列、极大正负平移、单元素行、长行和 dtype 都属于正确性矩阵，而不是附加项。
-- 本章已完成实现、边界检查、3 个独立正式进程、逐实现 profile 与 curated evidence。
+- Reduction 的难点来自多输入共同更新少输出；普通 `*output += value` 存在数据竞争。
+- 树形归约没有减少加法总数，却把串行依赖深度从 `O(N)` 降为 `O(log N)`，并允许分层映射到 thread、wave、block 和多次 dispatch。
+- HIP atomic 是最短正确起点；LDS 把全局 atomic 缩减到每 block 一次；局部累加与 Wave Shuffle 继续减少 block 数、LDS 访问和同步。
+- 普通 kernel 没有跨 block 全局屏障。写 partial 后结束 dispatch，再用第二阶段合并，是清晰且可验证的同步边界。
+- Triton 用 program、grid-stride tile、mask 与 `tl.sum` 表达相同层次；抽象更高并不免除 partial buffer、第二阶段和完整计时。
+- 浮点归约的顺序会影响舍入。正确性标准必须同时说明 reference、输入分布、dtype 与容差。
+- 本章已完成教程、可运行实验入口、边界检查、3 个独立 benchmark 进程和逐实现 `rocprofv3` 证据。
 
 ## 延伸阅读
 
-- [Triton Fused Softmax 教程](https://triton-lang.org/main/getting-started/tutorials/02-fused-softmax.html)：官方的一行一个 program 教学实现；本章的 program 映射只描述当前实现，不代表所有 Softmax kernel。
-- [Triton `tl.max` API](https://triton-lang.org/main/python-api/generated/triton.language.max.html) 与 [`tl.sum` API](https://triton-lang.org/main/python-api/generated/triton.language.sum.html)：两次归约的语言语义。
-- [AMD HIP Kernel Language](https://rocm.docs.amd.com/projects/HIP/en/latest/reference/kernel_language.html)：LDS、同步和 kernel 内建变量。
-- [`rocprofv3` 使用文档](https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-rocprofv3.html)：kernel trace 的官方命令说明。
-- [第 7 章 Element-Wise：逐元素算子](../chapter7/index.md)
-- [第 8 章 Reduction：归约算子](../chapter8/index.md)
-- [第 5 章 用 rocprof 找到慢点](../../part1-profiling/chapter5/index.md)
+- [AMD HIP 编程模型](https://rocm.docs.amd.com/projects/HIP/en/latest/understand/programming_model.html)：thread、block、grid、wavefront 与同步边界。
+- [AMD HIP C++ Language Extensions](https://rocm.docs.amd.com/projects/HIP/en/latest/reference/kernel_language.html)：`__shared__`、同步与 shuffle 等 kernel 语言能力。
+- [Triton `tl.sum` API](https://triton-lang.org/main/python-api/generated/triton.language.sum.html)：本章直接使用的归约原语。
+- [Triton Fused Softmax 教程](https://triton-lang.org/main/getting-started/tutorials/02-fused-softmax.html)：在完整算子中组合 `tl.max`、`tl.sum` 的官方示例。
+- [PyTorch HIP 语义](https://docs.pytorch.org/docs/stable/notes/hip.html)：ROCm 构建为什么继续复用 `torch.cuda` 接口名。
