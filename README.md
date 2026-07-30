@@ -6,6 +6,11 @@
 
 </div>
 
+<p align="center">
+  <img src="./docs/public/aup-logo.png" alt="AMD University Program" height="44">
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="./docs/public/rocm-logo.png" alt="AMD ROCm" height="44">
+</p>
 
 > [!CAUTION]
 > ⚠️ Alpha内测版本警告：此为早期内部构建版本，尚不完整且可能存在错误，欢迎大家提Issue反馈问题或建议。
