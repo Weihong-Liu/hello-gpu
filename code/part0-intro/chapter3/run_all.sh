@@ -24,6 +24,15 @@ GLOBAL_SIZE="${GLOBAL_SIZE:-16777216}"
 LDS_SIZE="${LDS_SIZE:-16777216}"
 MATRIX_BATCHES="${MATRIX_BATCHES:-4096}"
 
+case "${GPU_ARCH}" in
+    gfx1100|gfx1151) WMMA_SOURCE="rdna3_wmma.hip" ;;
+    gfx1201)         WMMA_SOURCE="rdna4_wmma.hip" ;;
+    *)
+        echo "GPU_ARCH=${GPU_ARCH} is unsupported; allowed: gfx1100 gfx1151 gfx1201" >&2
+        exit 2
+        ;;
+esac
+
 if [[ "${RUN_EDGE_CASES}" != "0" && "${RUN_EDGE_CASES}" != "1" ]]; then
     echo "RUN_EDGE_CASES must be 0 or 1" >&2; exit 2
 fi
@@ -43,6 +52,11 @@ for source in global_memory_access.hip lds_bank_conflict.hip rdna4_wmma.hip; do
         echo "${source} does not match SOURCE_COMMIT" >&2; exit 2
     fi
 done
+if [[ "${WMMA_SOURCE}" == "rdna3_wmma.hip" ]]; then
+    if [[ ! -f "${SCRIPT_DIR}/${WMMA_SOURCE}" ]]; then
+        echo "missing ${WMMA_SOURCE} for GPU_ARCH=${GPU_ARCH}" >&2; exit 2
+    fi
+fi
 
 if [[ ! -f "${PART_DIR}/activate-rocm.sh" ]]; then
     echo "missing ${PART_DIR}/activate-rocm.sh" >&2; exit 1
@@ -55,7 +69,8 @@ cleanup() { rm -rf "${BUILD_DIR}"; }
 trap cleanup EXIT
 
 compile() {
-    local source_name="$1" binary_name="$2" binary="${BUILD_DIR}/${binary_name}"
+    local source_name="$1" binary_name="$2"
+    local binary="${BUILD_DIR}/${binary_name}"
     hipcc --offload-arch="${GPU_ARCH}" -O3 -std=c++17 \
         -DCHAPTER2_SOURCE_COMMIT="\"${SOURCE_COMMIT}\"" \
         "${SCRIPT_DIR}/${source_name}" -o "${binary}"
@@ -70,8 +85,8 @@ binary_sha256() {
 
 compile global_memory_access.hip global_memory_access
 compile lds_bank_conflict.hip lds_bank_conflict
-compile rdna4_wmma.hip rdna4_wmma
-for binary in global_memory_access lds_bank_conflict rdna4_wmma; do
+compile "${WMMA_SOURCE}" wmma_matmul
+for binary in global_memory_access lds_bank_conflict wmma_matmul; do
     printf 'BINARY source_commit=%s gpu_target=%s binary=%s sha256=%s\n' \
         "${SOURCE_COMMIT}" "${GPU_ARCH}" "${binary}" \
         "$(binary_sha256 "${BUILD_DIR}/${binary}")" >&2
@@ -82,7 +97,7 @@ if [[ "${RUN_EDGE_CASES}" == "1" ]]; then
         --warmup 0 --repeat 1 --seed "${SEED}" >/dev/null
     "${BUILD_DIR}/lds_bank_conflict" --implementation all --size 257 \
         --warmup 0 --repeat 1 --seed "${SEED}" >/dev/null
-    "${BUILD_DIR}/rdna4_wmma" --implementation all --size 1 \
+    "${BUILD_DIR}/wmma_matmul" --implementation all --size 1 \
         --warmup 0 --repeat 1 --seed "${SEED}" >/dev/null
 fi
 
@@ -97,5 +112,5 @@ run_formal global_memory_access stride-257 "${GLOBAL_SIZE}"
 run_formal lds_bank_conflict stride-1 "${LDS_SIZE}"
 run_formal lds_bank_conflict stride-32 "${LDS_SIZE}"
 run_formal lds_bank_conflict stride-33 "${LDS_SIZE}"
-run_formal rdna4_wmma valu "${MATRIX_BATCHES}"
-run_formal rdna4_wmma wmma "${MATRIX_BATCHES}"
+run_formal wmma_matmul valu "${MATRIX_BATCHES}"
+run_formal wmma_matmul wmma "${MATRIX_BATCHES}"
