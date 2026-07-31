@@ -156,6 +156,13 @@ hipcc --offload-arch=gfx1201 -O3 -std=c++17 global_memory_access.hip -o global_m
 ./global_memory_access --implementation all --size 16777216 --warmup 10 --repeat 50
 ```
 
+**参数说明**：
+
+- `--implementation`：选择要运行的读取步长。`all` 会依次运行 `stride-1`、`stride-17` 和 `stride-257`，也可以单独指定其中一种。
+- `--size`：输入和输出数组包含的 FP32 元素数量，结果中记为 `N`。
+- `--warmup`：正式计时前的预热次数，不计入结果。
+- `--repeat`：正式计时的重复次数，程序报告这些测量结果的中位数。
+
 **结果**（RX 9070 XT + ROCm 7.13，`N=16,777,216` FP32，逻辑有效带宽按 `2 × N × sizeof(float) / time`）：
 
 | 读取 stride | 中位数时间（ms） | 逻辑有效带宽（GB/s） | 相对 stride-1 |
@@ -237,6 +244,12 @@ hipcc --offload-arch=gfx1201 -O3 -std=c++17 lds_bank_conflict.hip -o lds_bank_co
 # --implementation all 会依次跑 stride-1 / stride-32 / stride-33
 ./lds_bank_conflict --implementation all --size 16777216 --warmup 10 --repeat 50
 ```
+
+**参数说明**：
+
+- `--implementation`：选择 LDS 访问步长。`all` 会依次运行 `stride-1`、`stride-32` 和 `stride-33`，也可以单独指定其中一种。
+- `--size`：输入和输出数组包含的 FP32 元素数量。
+- `--warmup` 和 `--repeat`：含义同上一实验。
 
 **结果**（RX 9070 XT + ROCm 7.13，256-thread block、每线程 256 次 LDS 读取）：
 
@@ -335,6 +348,12 @@ hipcc --offload-arch=gfx1201 -O3 -std=c++17 rdna4_wmma.hip -o rdna4_wmma
 # --implementation all 会依次跑 valu 和 wmma 两条路径；--size 是矩阵批数
 ./rdna4_wmma --implementation all --size 4096 --warmup 10 --repeat 50
 ```
+
+**参数说明**：
+
+- `--implementation`：选择矩阵乘路径。`all` 会依次运行普通向量计算的 `valu` 和使用波前矩阵指令的 `wmma`，也可以单独指定其中一种。
+- `--size`：独立矩阵乘法的批次数；每一批都是一次固定的 16×16×16（FP16 输入、FP32 累加与输出）矩阵乘，不是矩阵边长。
+- `--warmup` 和 `--repeat`：含义同前述实验。
 
 **结果**（RX 9070 XT + ROCm 7.13，batch 4,096 个独立 16×16×16 乘，正确性对 CPU FP32 参考，smoke 最大绝对误差 `2.98e-08`）：
 

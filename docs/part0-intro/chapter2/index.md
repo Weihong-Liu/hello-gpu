@@ -240,6 +240,13 @@ hipcc --offload-arch=gfx1201 -O3 -std=c++17 branch_divergence.hip -o branch_dive
 ./branch_divergence --implementation all --size 16777216 --warmup 10 --repeat 50
 ```
 
+**参数说明**：
+
+- `--implementation`：选择要运行的分支模式。`all` 会依次运行 `wave-uniform` 和 `wave-divergent`，也可以单独指定其中一种。
+- `--size`：输入数组包含的 FP32 元素数量，结果中记为 `N`；每个有效 thread 处理一个元素。
+- `--warmup`：正式计时前的预热次数，不计入结果。
+- `--repeat`：正式计时的重复次数，程序报告这些测量结果的中位数。
+
 **结果**（RX 9070 XT + ROCm 7.13，三进程中位数 [进程范围]，`N=16,777,216` FP32）：
 
 | 实现 | 中位数时间（ms） | 吞吐（TFLOPS） | 相对差距 |
