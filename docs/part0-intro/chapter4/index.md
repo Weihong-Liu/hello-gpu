@@ -67,9 +67,9 @@ __global__ void vector_add(const float* a, const float* b, float* c, int n) {
 
 新语法速查：
 
-- `__global__`：告诉编译器"这是一个 GPU 函数，由 CPU 调用、在 GPU 上运行"；
+- `__global__`：告诉编译器「这是一个 GPU 函数，由 CPU 调用、在 GPU 上运行」；
 - `<<<blocks, threads>>>`：HIP / CUDA 特有的 kernel 启动语法，`blocks` 是要启动多少组，`threads` 是每组多少个线程；
-- `blockIdx.x` / `threadIdx.x`：每个 GPU 线程拿到的"工号"，用它来算自己负责数组里的哪个位置。
+- `blockIdx.x` / `threadIdx.x`：每个 GPU 线程拿到的「工号」，用它来算自己负责数组里的哪个位置。
 
 换成大白话：`vector_add<<<blocks, threads>>>(...)` 就是在 GPU 上同时叫起 `blocks × threads` 个工人，每个工人执行一次 `vector_add` 函数（如 @fig-block-thread-hierarchy 所示）。
 
@@ -88,7 +88,7 @@ hipcc vector_add.hip -O2 -o vector_add && echo "compile_status: PASS"
 ```
 
 <details>
-<summary>输出：vector add 运行结果（9070XT）</summary>
+<summary>输出：vector add 运行结果（RX 9070 XT）</summary>
 
 ```text
 device_name: AMD Radeon RX 9070 XT
@@ -111,7 +111,7 @@ status: PASS
 
 1. 正式计时前先 warmup 5 次，让 GPU 进入比较稳定的状态；
 2. 正式跑 30 次，每次用 `torch.cuda.Event` 量 GPU 真正执行完成的时间；
-3. 最后用最小值估算带宽，因为最小值更像"没被外部干扰"的那次。
+3. 最后用最小值估算带宽，因为最小值更像「没被外部干扰」的那次。
 
 ::: figure fig-benchmark-warmup-repeat-sync
 ![Benchmark 的赛前准备](./images/benchmark-warmup-repeat-sync.png)
@@ -284,7 +284,7 @@ bytes_moved = vector_size × 3 × 4
 
 GPU 快了约 **21 倍**。但注意：这个 21 倍是「数据已经在显存上、只量 kernel 执行」的口径——如果把 Host↔Device 的数据搬运也算进去，差距会小得多（对 vector add 这种简单操作，搬数据的开销可能比计算本身还大）。**GPU 的优势，在数据已经留在显存上、并且有多步计算可以复用它时最明显。**
 
-### 4.4.2 算术强度：vector add 是内存密集型
+### 4.4.2 算术强度：vector add 是访存受限
 
 为什么 vector add 这么快、却又「没什么计算量」？看它的**算术强度**（Arithmetic Intensity，记作 $AI$）——每搬 1 Byte 数据做多少次计算：
 
@@ -298,11 +298,11 @@ $$
 AI = \frac{1\ \text{FLOP}}{12\ \text{Byte}} \approx 0.083\ \text{FLOP/Byte}
 $$
 
-0.083 极低——每搬 12 字节才做 1 次加法。这意味着 vector add 是**典型的内存密集型（memory-bound）算子**：它的快慢几乎完全取决于显存带宽，而不是算力。把算力堆得再高，对 vector add 也没用，因为瓶颈在搬数据。
+0.083 极低——每搬 12 字节才做 1 次加法。这意味着 vector add 是**典型的访存受限（memory-bound）算子**：它的快慢几乎完全取决于显存带宽，而不是算力。把算力堆得再高，对 vector add 也没用，因为瓶颈在搬数据。
 
 ### 4.4.3 带宽利用率：离硬件极限有多远
 
-既然是内存密集型，那就拿实测带宽和硬件上限比一比。先由 kernel 时间和搬运字节数算**有效带宽** $BW_{effective}$（vector add 读 2 个、写 1 个，共 3 个数组、每元素 4 Byte）：
+既然是访存受限，那就拿实测带宽和硬件上限比一比。先由 kernel 时间和搬运字节数算**有效带宽** $BW_{effective}$（vector add 读 2 个、写 1 个，共 3 个数组、每元素 4 Byte）：
 
 $$
 BW_{effective} = \frac{3 \times N \times 4\ \text{Byte}}{t}
@@ -322,7 +322,7 @@ $$
 
 对一个如此简单的 kernel 来说，~77% 已经相当不错——剩下的差距来自 launch 开销、计时边界、缓存与写路径等因素。这也说明 vector add 的访存效率已经很高（完全合并、线性流式），**优化空间不大；想再快，只能提高算术强度**（比如把多个逐元素操作融合成一个 kernel，让搬一次数据做更多计算）。
 
-这套「先看算术强度判断瓶颈在带宽还是算力、再用实测带宽和上限比利用率」的思路，会在 Part 2 每个算子里反复用到：[第 8 章 Element-Wise](../../part2-kernels/chapter8/index.md) 会第一次系统地做这件事，[第 11 章 GEMM](../../part2-kernels/chapter11/index.md)、[第 12 章 Attention/Fusion](../../part2-kernels/chapter12/index.md) 则是高算术强度、吃算力的另一侧。
+这套「先看算术强度判断瓶颈在带宽还是算力、再用实测带宽和上限比利用率」的思路，会在 Part 2 每个算子里反复用到：[第 8 章 Element-Wise](../../part2-kernels/chapter8/index.md) 会第一次系统地做这件事，[第 11 章 GEMM-Like(../../part2-kernels/chapter11/index.md)、[第 12 章 Fusion：融合算子](../../part2-kernels/chapter12/index.md) 则是高算术强度、吃算力的另一侧。
 
 ### 4.4.4 何时值得用 GPU
 
@@ -336,7 +336,45 @@ $$
 
 > 完整的 Roofline 读图方法——怎么把工作点画到「算术强度 vs 性能」图上、看它落在带宽斜线还是算力水平线那一侧、据此选排查方向——会在 part1 [第 7 章 读懂 Roofline 图](../../part1-profiling/chapter7/index.md) 系统讲；在那之前，[第 5 章](../../part1-profiling/chapter5/index.md) 和 [第 6 章](../../part1-profiling/chapter6/index.md) 会先教你把时间量准、用 `rocprof` 找到慢在哪个 kernel。
 
-## 4.5 留下实验底稿
+## 4.5 dispatch 开销：launch 本身要多久
+
+前几节量的是 kernel 执行时间。但「调用一个 kernel」这件事本身也花时间——这段开销叫 **dispatch 开销（launch overhead）**。kernel 越短，它在总时间里占比越大。
+
+### 4.5.1 一次 dispatch 发生了什么
+
+从你的代码调用 `hipLaunchKernel` 到 GPU 真正开始执行，中间经过一条链路：
+
+```text
+host 端 HIP API
+  → AMDGPU 内核驱动（KFD）
+  → 写一个 AQL packet 到 queue（描述 grid、kernel 地址、参数）
+  → 敲 doorbell（告诉 GPU「有新任务」）
+  → GPU 端硬件调度器取 packet，分配到 CU
+```
+
+每一跳都有成本：API 调用本身的函数开销、驱动把参数打包进 packet 的开销、写 doorbell 的同步、以及 GPU 侧调度器取任务的时间。这些加起来就是 dispatch 开销。
+
+### 4.5.2 实测：HIP 与裸金属的差距
+
+在 RX 7900 XTX 上有人做过一个对照实验：同一套 AQL dispatch 流程，一边走标准 HIP 运行时，一边绕过 HIP 直接用 KFD ioctl 裸写 AQL packet（见延伸阅读），实测结果：
+
+| 路径 | async（不等结果） | sync（等结果） |
+| ---- | ----: | ----: |
+| 标准 HIP | 2.6 μs | 20.5 μs |
+| 裸金属 KFD | 2.26 μs | 14.96 μs |
+
+两个结论：
+
+1. **async dispatch 的绝对开销在个位数 μs 量级**，其中只有约 13% 是 HIP 运行时带来的（2.6 vs 2.26 μs）——大部分时间花在驱动与硬件的固定流程上，绕开 HIP 也省不掉多少。
+2. **sync 的 20 μs 里大头是「等」**：sync dispatch 要等 GPU 把活儿干完再返回，所以时间包含任务执行。真正能优化的是 async 路径。
+
+对本章的 vector add（kernel 约 0.345 ms）来说，2.6 μs 的 dispatch 开销占比不到 1%，可以忽略。但**对微 kernel 或者被拆得很碎的 kernel 序列，dispatch 开销会吃掉可观的比例**——第 17 章会看到一个真实例子：split-KV 把一次注意力拆成 160 次 launch，小输入时启动开销反而盖过了并行度收益。
+
+### 4.5.3 对「CPU vs GPU」结论的修正
+
+回看 4.4.1 的 21 倍加速，口径是「只量 kernel 执行」。把 dispatch 和 host 侧准备工作加进去，加速比会下降；数据再小一些，CPU 甚至会反超。所以「这个操作用 GPU 快不快」的正确问法是：**kernel 执行 + 数据搬运 + dispatch 的总账算下来，值不值**。这也是 4.4.4 那张「何时值得用 GPU」表里「数据量小、单次简单操作」选 CPU 的原因之一。
+
+## 4.6 留下实验底稿
 
 跑完前面三段命令，你大概觉得事情已经做完了——其实还没有。**性能工作真正麻烦的一刻，往往不是第一次没跑快，而是过几天回头看时，你自己也说不清当时跑了哪个版本、用了什么输入、那个数字到底是怎么量出来的。** 没留记录的实验，三天后基本等于白做。
 
@@ -376,7 +414,7 @@ python benchmark_vector_add.py
 | status | PASS |
 ````
 
-看起来朴素，但半年后你回头翻这些记录，会非常感谢现在的自己。后面这本教程会一路写到 Reduction、Softmax、Matmul、Attention，外加一系列 rocprof 实验——等到 kernel 版本越积越多、benchmark 配置越改越乱时，**能不能一眼看回当初跑过什么**，往往就是"顺利继续"和"回头返工"的分界线。
+看起来朴素，但半年后你回头翻这些记录，会非常感谢现在的自己。后面这本教程会一路写到 Reduction、Softmax、Matmul、Attention，外加一系列 rocprof 实验——等到 kernel 版本越积越多、benchmark 配置越改越乱时，**能不能一眼看回当初跑过什么**，往往就是「顺利继续」和「回头返工」的分界线。
 
 试一试：把 `--size` 从默认的 `1 << 24` 改成 `1 << 20` 和 `1 << 26`，分别再跑一次 benchmark，把每次的硬件、输入规模、GPU min 延迟和估算带宽随手记到你的实验记录里。先猜一下——GPU 带宽会一直变大、一直变小，还是先升后降？这道题没有标准答案，目的是让你亲手建立"输入规模 vs 性能"的第一感觉，后面 Part 1 会反复用到。
 
@@ -385,7 +423,7 @@ python benchmark_vector_add.py
 - 本章在 `part0-intro` 环境里跑通了第一个手写 HIP Vector Add kernel。
 - 第一个 HIP kernel 使用"一线程处理一个元素"的最简单映射方式，方便理解 block、thread 和全局下标。
 - baseline benchmark 使用 warmup + repeat，并用 GPU event 计时，避免只量到 CPU 提交开销。
-- vector add 的算术强度极低（~0.083 FLOP/Byte），是典型的 memory-bound 算子——性能几乎完全取决于显存带宽，而非算力。
+- vector add 的算术强度极低（~0.083 FLOP/Byte），是典型的 访存受限算子——性能几乎完全取决于显存带宽，而非算力。
 - 实测带宽 ~583 GB/s，约为标称 760 GB/s 的 77%；对这么简单的 kernel 已经不错，想再快只能提高算术强度（融合）。完整的 Roofline 读图方法在 Part 1 第 7 章。
 - 下一章进入 Part 1 profiling 篇，先系统学怎么量准数字（benchmark 与可信计时）。
 
