@@ -133,7 +133,7 @@ hipcc --offload-arch=gfx1201 -O3 vector_add.hip -o vector_add_bench
 
 有效带宽是为了方便比较而换算出的数值，不等于硬件实际发出的 DRAM 事务量。
 
-在 9070XT 上得到的结果如下：
+在 RX 9070 XT 上得到的结果如下：
 
 | kernel | stride | 最短时间 | 有效带宽 | 正确性 |
 | ---- | ----: | ----: | ----: | :----: |
@@ -222,7 +222,7 @@ flowchart LR
 
 ## 6.5 看看静态资源有没有变
 
-这一节检查 VGPR、SGPR 和 LDS。Occupancy（占用率）在这里可以先简单理解成“GPU 能同时保留多少个 wavefront 轮流工作”。
+这一节检查 VGPR、SGPR 和 LDS。占用率在这里可以先简单理解成“GPU 能同时保留多少个 wavefront 轮流工作”。
 
 `linecross stride=1` 和 `linecross stride=32` 执行的是同一个编译后的 kernel。stride 是运行时参数，因此两种配置的静态资源分配相同：
 

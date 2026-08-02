@@ -21,9 +21,9 @@ description: "Hello GPU 第7章 · 看懂参考线、生成工作点并选择排
 
 | 工作点位置 | 先想到什么 | 常见下一步 |
 | ---- | ---- | ---- |
-| AI 小，接近带宽斜线 | 典型 memory-bound | 减少访存、做融合或提高数据复用 |
+| AI 小，接近带宽斜线 | 典型访存受限 | 减少访存、做融合或提高数据复用 |
 | AI 小，离斜线很远 | 访存效率不高 | 检查地址是否连续、是否有多余读写 |
-| AI 大，靠近水平线 | 典型 compute-bound | 使用 WMMA、降精度或减少计算 |
+| AI 大，靠近水平线 | 典型算力受限 | 使用 WMMA、降精度或减少计算 |
 | 离两条线都远 | 还有别的开销 | 检查 launch、同步和输入规模 |
 
 Roofline 不会直接告诉你哪一行代码有问题。它更像一张地图：先根据 AI 选择访存或计算方向，再看工作点离相应上限还有多少空间。
@@ -43,7 +43,7 @@ Roofline 不会直接告诉你哪一行代码有问题。它更像一张地图�
 算术强度 AI = 1 / 12 ≈ 0.083 FLOP/Byte
 ```
 
-`0.083 FLOP/Byte` 很低，所以 vector add 会落在图的左侧，属于典型的 memory-bound 算子。
+`0.083 FLOP/Byte` 很低，所以 vector add 会落在图的左侧，属于典型的 访存受限算子。
 
 画工作点只需要三样东西：
 
@@ -111,7 +111,7 @@ python chapter7/plot_roofline_ch6.py --save
 ::: figure fig-roofline-vadd-linecross
 ![Ch5/Ch6 实测 Roofline：coalesced 与 linecross 两个工作点](./images/roofline-ch6.png)
 
-第 5、8 章实测数据经绘图脚本生成的 9070XT Roofline 工作点。
+第 5、8 章实测数据经绘图脚本生成的 RX 9070 XT Roofline 工作点。
 :::
 
 如 @fig-roofline-vadd-linecross 所示，两个版本按算法口径计算出的算术强度相同。蓝色斜线是独立实测的 510 GB/s GDDR6 参考线，红色水平线是 10.6 TFLOPS 的 fp32 计算参考值。两个工作点的区别在纵轴：
@@ -131,7 +131,7 @@ python chapter7/plot_roofline_ch6.py --save
 | AI 很高，离水平线远 | 是否走了矩阵计算路径 | 对比 WMMA 和普通 VALU 实现 |
 | 输入很小，点很低 | launch 是否占了大头 | 放大输入，观察时间是否近似线性增长 |
 | 许多短 kernel 串联 | 是否频繁启动和同步 | 看 kernel trace 的数量与间隔 |
-| 使用大量寄存器或 LDS | 是否限制了 occupancy | 对比 VGPR、SGPR、LDS 用量 |
+| 使用大量寄存器或 LDS | 是否限制了 占用率 | 对比 VGPR、SGPR、LDS 用量 |
 
 回到 vector add：它的 AI 只有 0.083，所以先从访存方向检查是合理的。不过，第 6 章的 stride 还会同时改变每线程循环次数和 Grid Size；当前曲线只能提示方向，不能单独证明访存合并就是全部原因。下一步应补一个线程数和每线程工作量都固定的对照。
 
@@ -216,7 +216,7 @@ Part 2 的 Reduction、Softmax、GEMM 和 Attention 会继续使用这条路线�
 ## 本章小结
 
 - Roofline 先用横轴和拐点判断理论瓶颈方向，再看工作点离对应上限还有多远。
-- vector add 的 AI 约为 0.083 FLOP/Byte，理论上位于 memory-bound 一侧；有效带宽点还会受到算法口径和 cache 的影响。
+- vector add 的 AI 约为 0.083 FLOP/Byte，理论上位于 访存受限一侧；有效带宽点还会受到算法口径和 cache 的影响。
 - Roofline 负责选择排查方向，`rocprofv3` 和单变量实验负责找到更具体的原因。
 - 一页性能记录只需要环境、命令、结果、判断和下一步。
 

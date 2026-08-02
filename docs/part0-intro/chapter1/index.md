@@ -50,7 +50,7 @@ code/part0-intro/
 
 ## 1.2 平台边界：原生 Linux 优先，WSL2 可用
 
-在 9070XT 上跑 ROCm，常见的有两种平台选择：
+在 RX 9070 XT 上跑 ROCm，常见的有两种平台选择：
 
 | 方案 | 说明 |
 | ---- | ---- |
@@ -148,7 +148,7 @@ rocminfo | grep -E "^[[:space:]]*(Name|Marketing Name|Vendor Name|Device Type|Co
 ```
 
 <details>
-<summary>输出：rocminfo 识别到 gfx1201 GPU（9070XT）</summary>
+<summary>输出：rocminfo 识别到 gfx1201 GPU（RX 9070 XT）</summary>
 
 ```text
   Name:                    12th Gen Intel(R) Core(TM) i5-12600K
@@ -167,14 +167,14 @@ rocminfo | grep -E "^[[:space:]]*(Name|Marketing Name|Vendor Name|Device Type|Co
 
 关键看两点：`Device Type: GPU` 必须出现，并且 `Name` 是 `gfx1201`（对应 Marketing Name `AMD Radeon RX 9070 XT`）。两条都对上了，说明驱动认得你的卡——第一道门已经推开一半了。
 
-> 如果你想确认 9070XT 的 ISA 名，可以再补一句 `rocminfo | grep amdhsa`，会看到 `amdgcn-amd-amdhsa--gfx1201` 和 `amdgcn-amd-amdhsa--gfx12-generic` 两条——前者是具体型号 target，后者是 gfx12 系列的通用 ISA。
+> 如果你想确认 RX 9070 XT 的 ISA 名，可以再补一句 `rocminfo | grep amdhsa`，会看到 `amdgcn-amd-amdhsa--gfx1201` 和 `amdgcn-amd-amdhsa--gfx12-generic` 两条——前者是具体型号 target，后者是 gfx12 系列的通用 ISA。
 
 #### rocm-smi / amd-smi：原生 Linux 可用，WSL2 下都不支持
 
-在原生 Linux 上，验证完 `rocminfo` 后通常接着跑 `rocm-smi`（GPU 状态速览）和 `amd-smi`（更详细的硬件拓扑/功耗/clock）看 GPU 的显存、温度、功耗。本教程实验机（原生 Ubuntu 24.04 + 9070XT）上这两个工具的典型输出：
+在原生 Linux 上，验证完 `rocminfo` 后通常接着跑 `rocm-smi`（GPU 状态速览）和 `amd-smi`（更详细的硬件拓扑/功耗/clock）看 GPU 的显存、温度、功耗。本教程实验机（原生 Ubuntu 24.04 + RX 9070 XT）上这两个工具的典型输出：
 
 <details>
-<summary>输出：rocm-smi（原生 Ubuntu，9070XT）</summary>
+<summary>输出：rocm-smi（原生 Ubuntu，RX 9070 XT）</summary>
 
 ```text
 $ rocm-smi
@@ -202,7 +202,7 @@ GPU[0]  : GFX Version:    gfx1201
 </details>
 
 <details>
-<summary>输出：amd-smi（原生 Ubuntu，9070XT，信息更详细）</summary>
+<summary>输出：amd-smi（原生 Ubuntu，RX 9070 XT，信息更详细）</summary>
 
 `amd-smi` 是 `rocm-smi` 的后继者，提供更完整的硬件拓扑（PCIe 版本/带宽、功耗限制、固件版本等），它的输出比 `rocm-smi` 详细得多：
 
@@ -477,7 +477,7 @@ compile_status: PASS
 ```
 
 <details>
-<summary>输出：vector add 运行结果（9070XT）</summary>
+<summary>输出：vector add 运行结果（RX 9070 XT）</summary>
 
 ```text
 device_name: AMD Radeon RX 9070 XT
@@ -496,7 +496,7 @@ status: PASS
 
 ## 1.7 环境不通时先收集什么
 
-环境问题最容易让人焦虑——这一点我们都经历过。但**最糟糕的排错方式是只说一句"跑不通"**。无论求助对象是助教、社区，还是几小时之后冷静下来的你自己，你都需要把模糊的"不行"翻译成别人能判断的具体信息。
+环境问题最容易让人焦虑——这一点我们都经历过。但**最糟糕的排错方式是只说一句"跑不通"**。无论求助对象是助教、社区，还是几小时之后冷静下来的你自己，你都需要把模糊的「不行」翻译成别人能判断的具体信息。
 
 一个像样的排错请求，至少需要包含下面这些信息：
 
@@ -558,7 +558,7 @@ HIP / Triton / profiling 工具
 - `activate-rocm.sh` 负责处理 ROCm wheel 的环境变量，最核心的职责是让 `ROCM_PATH` 指向 `_rocm_sdk_devel`，而不是 `_rocm_sdk_core`。
 - PyTorch ROCm 里看到 `cuda:0` 完全正常，是历史命名问题，**不代表**你在用 NVIDIA GPU。
 - 环境不通时不要只甩一句"失败了"——把机器信息、目录、命令、完整输出、版本号和最近改动一起拿出来，排错效率会高一个数量级。
-- 下一章我们正式进入 GPU 体系结构，把 CU、Wavefront、LDS 这些概念拆开来看——三道门之后的风景，我们来了。
+- 下一章我们正式进入 GPU 体系结构，把 CU、wavefront、LDS 这些概念拆开来看——三道门之后的风景，我们来了。
 
 ## 延伸阅读
 
