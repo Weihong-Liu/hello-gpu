@@ -19,9 +19,9 @@ description: "Hello GPU 附录 · AMD wheel 源按架构分开打包，换卡时
 
 下面三步，就是怎么把这张表填对、用上。
 
-## 为什么换卡要改这么多：别被"万能包"误导
+## 为什么换卡要改这么多：别被「万能包」误导
 
-第一次换卡的人，十有八九会犯同一个错——以为换个架构改个版本号就行了，结果被 `uv sync` 甩一脸 `No solution found`。问题不在版本号，而在于 AMD 的 ROCm wheel 根本不是一份"万能包"。
+第一次换卡的人，十有八九会犯同一个错——以为换个架构改个版本号就行了，结果被 `uv sync` 甩一脸 `No solution found`。问题不在版本号，而在于 AMD 的 ROCm wheel 根本不是一份「万能包」。
 
 它是**为每种 GPU 架构单独编译一套**的。原因是底层指令集不一样：gfx1201 是 RDNA 4，gfx1151 是 RDNA 3.5，两者的 machine code、寄存器布局、Tensor 单元都不一样。AMD 把这些不同架构的 wheel 放在不同的目录里：
 
@@ -48,9 +48,9 @@ https://repo.amd.com/rocm/whl/
 > ⚠️ **最容易栽跟头的一个细节**：gfx 编号里那个字母 X 的大小写。
 >
 > - **gfx1201**（小写）是 GPU 型号编号，出现在 `rocminfo`、编译器 target 里。
-> - **gfx120X-all**（大写 X）是 AMD 的 wheel 目录命名习惯，X 代表"这一系列所有型号通用的合并包"。它出现在 wheel 源 URL 和 `rocm-sdk-libraries` 的包名后缀里。
+> - **gfx120X-all**（大写 X）是 AMD 的 wheel 目录命名习惯，X 代表「这一系列所有型号通用的合并包」。它出现在 wheel 源 URL 和 `rocm-sdk-libraries` 的包名后缀里。
 >
-> 这两套命名只在 gfx1151 这种"一个型号独占一个源"的情况下才长得一样。一旦你的卡属于一个系列（gfx1200/1201 共用 gfx120X-all），它们就分开了——抄包名时**必须和 wheel 源里实际的目录名、文件名一字不差**。
+> 这两套命名只在 gfx1151 这种「一个型号独占一个源」的情况下才长得一样。一旦你的卡属于一个系列（gfx1200/1201 共用 gfx120X-all），它们就分开了——抄包名时**必须和 wheel 源里实际的目录名、文件名一字不差**。
 
 ## 第二步：确认源上有这一套版本
 
@@ -82,7 +82,7 @@ triton/
 | torch | 2.7.1 / 2.8.0 / 2.9.1 / 2.10.0 / **2.11.0** |
 | triton | 3.3.1 / 3.4.0 / 3.5.1 / **3.6.0** |
 
-版本号要成套：选了 ROCm 7.13.0，torch 就得是 `torch==2.11.0+rocm7.13.0`，triton 就得是 `triton==3.6.0+rocm7.13.0`。后缀里的 `+rocmX.Y.Z` 不是装饰——它和 ROCm 主版本是一一绑定的，错了 uv 就会告诉你"找不到这个版本"。
+版本号要成套：选了 ROCm 7.13.0，torch 就得是 `torch==2.11.0+rocm7.13.0`，triton 就得是 `triton==3.6.0+rocm7.13.0`。后缀里的 `+rocmX.Y.Z` 不是装饰——它和 ROCm 主版本是一一绑定的，错了 uv 就会告诉你「找不到这个版本」。
 
 确认 7.13.0 那套齐全之后，你就可以直接照搬教程基线的版本号，只改源和包名。
 
@@ -139,7 +139,7 @@ triton = { index = "rocm-amd" }
 | gfx120X-all/ | `rocm-sdk-libraries-gfx120x-all/` | `gfx120x-all` |
 | gfx1151/ | `rocm-sdk-libraries-gfx1151/` | `gfx1151` |
 
-而且 `dependencies` 和 `[tool.uv.sources]` 两处的包名必须一字不差。很多人只改了 `dependencies` 忘了改 sources，uv 就会去默认源（bfsu 镜像）找这个包，然后告诉你"找不到"——不是包不存在，是它去了错的地方。
+而且 `dependencies` 和 `[tool.uv.sources]` 两处的包名必须一字不差。很多人只改了 `dependencies` 忘了改 sources，uv 就会去默认源（bfsu 镜像）找这个包，然后告诉你「找不到」——不是包不存在，是它去了错的地方。
 
 至于版本号为什么一行都不用改：因为 AMD 发布 ROCm 7.13.0 时，gfx1151 和 gfx120X-all 两个源是同步出包的，同一份 7.13.0 源码只是分别针对两种架构各编译了一套 wheel。你把教程基线里那段版本约束整段复制过来就行。
 
@@ -187,7 +187,7 @@ source ./activate-rocm.sh
 rocminfo | grep gfx1151      # 这次应该看到 gfx1151，而不是 gfx1201
 ```
 
-## 报错对照表：把模糊的"不行"翻译成具体原因
+## 报错对照表：把模糊的「不行」翻译成具体原因
 
 换卡时如果 `uv sync` 没一次过，大概率是下面这几种情况之一。每种都列出了根因和对症办法，对照着查就行。
 
@@ -199,7 +199,7 @@ rocminfo | grep gfx1151      # 这次应该看到 gfx1151，而不是 gfx1201
 | 下载 404 | wheel 源 URL 写错，或这个版本在该源上不存在 | URL 用目标架构目录；回到第二步确认版本存在 |
 | `was found on mirrors.bfsu.edu.cn ... but not at requested version` | bfsu 上有同名占位包，uv 默认的 `first-index` 策略锁在 bfsu 不走 AMD 源 | 确保 AMD 源 `explicit = true`，且包名在 `[tool.uv.sources]` 里被点名映射到 `rocm-amd` |
 
-第一条值得单独说一句。用 `rocm[devel]==X.Y.Z` 这种 extras 写法看起来更简洁，但 uv 会把 `rocm-sdk-core` 当成 `rocm` 的传递依赖，解析时不走你指定的 AMD 源，而是去默认源（bfsu）找——那里根本没有这个版本，于是报错。这就是为什么本教程所有章节的 `pyproject.toml` 都采用"拆分式"写法：把 `rocm-sdk-core`、`rocm-sdk-devel`、`rocm-sdk-libraries-*` 各自单独列为直接依赖，而不是图省事合并成 `rocm[devel,libraries]`。这不是啰嗦，是专门为了绕开这个坑。迁移到任何架构，都请保留这种写法。
+第一条值得单独说一句。用 `rocm[devel]==X.Y.Z` 这种 extras 写法看起来更简洁，但 uv 会把 `rocm-sdk-core` 当成 `rocm` 的传递依赖，解析时不走你指定的 AMD 源，而是去默认源（bfsu）找——那里根本没有这个版本，于是报错。这就是为什么本教程所有章节的 `pyproject.toml` 都采用「拆分式」写法：把 `rocm-sdk-core`、`rocm-sdk-devel`、`rocm-sdk-libraries-*` 各自单独列为直接依赖，而不是图省事合并成 `rocm[devel,libraries]`。这不是啰嗦，是专门为了绕开这个坑。迁移到任何架构，都请保留这种写法。
 
 ## 小结
 
@@ -211,7 +211,7 @@ rocminfo | grep gfx1151      # 这次应该看到 gfx1151，而不是 gfx1201
          ──×→  版本组合            （不用改，7.13.0 一套通用）
 ```
 
-只改源不改包名，或者反过来，uv 报出来的错往往指向"找不到版本"这种表层现象——你盯着版本号调半天，其实根子在源或包名上。记住版本不动、源和包名一起改，这事儿就从玄学变成了机械操作。
+只改源不改包名，或者反过来，uv 报出来的错往往指向「找不到版本」这种表层现象——你盯着版本号调半天，其实根子在源或包名上。记住版本不动、源和包名一起改，这事儿就从玄学变成了机械操作。
 
 如果你是反过来——手上是 gfx120X-all、想迁到 gfx1151 之外的架构——流程完全对称：源换成目标架构目录、包名换成对应的目录名后缀，版本照旧 `7.13.0` 一套不动。
 

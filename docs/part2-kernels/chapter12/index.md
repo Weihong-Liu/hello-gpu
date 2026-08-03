@@ -119,7 +119,7 @@ python attention_triton.py --version all --seq 128 --dim 64
 | ---: | ---: | --- |
 | 1 | 1 | 最小退化情况 |
 | 7 | 13 | S/D 都不是二次幂 |
-| 33 | 31 | 跨过常见 wave/block 边界 |
+| 33 | 31 | 跨过常见 wavefront/block 边界 |
 | 128 | 64 | 教学主形状 |
 
 每条实现都与 CPU 或 PyTorch 的 `softmax(Q @ K.T / sqrt(D)) @ V` 比较。为了专门压力测试数值稳定性，还应把 Q/K 放大，使原始 score 足以让直接 `exp(score)` 溢出；稳定实现仍应输出有限值。
@@ -180,7 +180,7 @@ HIP 把线程协作和同步完整暴露出来；Triton 更接近 tile 级数学
 
 ## 正式实验结果
 
-![Chapter 11 Attention 性能对比](./images/attention-performance.png)
+![Chapter 12 Attention 性能对比](./images/attention-performance.png)
 
 主 shape 为 `S=128, D=64` FP32。HIP online 为 `0.227383 ms`，慢于 materialized 的 `0.0586405 ms`：消除 `S×S` 中间量并没有抵消当前教学实现中的频繁同步。Triton t0/t1 为 `0.024580/0.017380 ms`。这些结果不代表完整 FlashAttention 实现，也不外推到长序列、causal、batch/head 或混合精度。
 

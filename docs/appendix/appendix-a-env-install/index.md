@@ -40,13 +40,13 @@ code/part0-intro/
 
 ## A.2 为什么 AMD wheel 源要 explicit
 
-9070XT（RDNA4 消费卡）走的是 AMD `gfx120X-all` wheel 源（gfx1200/1201 通用合并包），和数据中心卡、gfx1151 等源不同。
+RX 9070 XT（RDNA4 消费卡）走的是 AMD `gfx120X-all` wheel 源（gfx1200/1201 通用合并包），和数据中心卡、gfx1151 等源不同。
 
 `explicit = true` 的意思是：**只有在 `[tool.uv.sources]` 里被明确点名映射到 `rocm-amd` 的包，才会去这个源查询**，其他包一律不打扰它。
 
-这一点非常关键。AMD wheel 源有个"脾气"——对一些普通 Python 包，它不返回"没找到"，而是直接甩一个 `403 Forbidden`。如果让 uv 在解析任意包时都跑去问 AMD 源，那些普通依赖就可能被这个 `403` 一刀切，整个解析直接崩掉。
+这一点非常关键。AMD wheel 源有个「脾气」——对一些普通 Python 包，它不返回「没找到」，而是直接甩一个 `403 Forbidden`。如果让 uv 在解析任意包时都跑去问 AMD 源，那些普通依赖就可能被这个 `403` 一刀切，整个解析直接崩掉。
 
-所以本篇环境采用"双源 + 显式映射"的结构：普通包走默认 PyPI（或镜像），ROCm 相关的才走 AMD wheel 源。井水不犯河水，干净利落。
+所以本篇环境采用「双源 + 显式映射」的结构：普通包走默认 PyPI（或镜像），ROCm 相关的才走 AMD wheel 源。井水不犯河水，干净利落。
 
 > 💡 如果你换的卡让 wheel 源路径变化（例如从 gfx120X-all 换到 gfx1151），`explicit` 的写法不用动，要改的是 wheel 源 URL 和 libraries 包名——细节见 [附录 B · 换一张卡](../appendix-b-switch-gpu/index.md)。
 

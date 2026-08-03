@@ -9,7 +9,7 @@ description: "Hello GPU 第5章 · 热身、重复、GPU event、避免测量陷
 
 > 前面几章我们把环境、GPU 体系结构和第一个 vector add 程序串了起来，[第 4 章](../../part0-intro/chapter4/index.md)还用一次 baseline benchmark 建立了「算子离 Roofline 上限有多远」的直觉。从这一篇（Part 1 profiling 篇）开始，问题变成：怎么知道量出来的数字准不准、可不可信、会不会骗人？
 >
-> 本章先把镜头对准「量准」这件事本身。Latency、Throughput、Bandwidth、FLOPS 这些指标，memory-bound / compute-bound 这套判断语言，以及 Roofline 心智模型，[第 2–3 章](../../part0-intro/chapter2/index.md)和[第 4 章](../../part0-intro/chapter4/index.md)已经建立，本章不再重复——而是把它们底下那层更基础的东西讲清楚：一次 benchmark 怎样才算可信。读完后你应该能：解释为什么不能只跑一次就下结论；说明 warmup、repeat、synchronize 这些「无聊」的细节如何决定数字是否可信；用 GPU event 而不是 CPU wall clock 量出 kernel 的真实耗时；用一份检查清单避免常见的伪优化。
+> 本章先把镜头对准「量准」这件事本身。Latency、Throughput、Bandwidth、FLOPS 这些指标，访存受限 / 算力受限（memory-bound / compute-bound）这套判断语言，以及 Roofline 心智模型，[第 2–3 章](../../part0-intro/chapter2/index.md)和[第 4 章](../../part0-intro/chapter4/index.md)已经建立，本章不再重复——而是把它们底下那层更基础的东西讲清楚：一次 benchmark 怎样才算可信。读完后你应该能：解释为什么不能只跑一次就下结论；说明 warmup、repeat、synchronize 这些「无聊」的细节如何决定数字是否可信；用 GPU event 而不是 CPU wall clock 量出 kernel 的真实耗时；用一份检查清单避免常见的伪优化。
 
 [第 4 章](../../part0-intro/chapter4/index.md)你已经写过一个小 benchmark（`benchmark_vector_add.py`），里面用了 warmup、repeat 和 GPU event——但当时只是照着做。本章把每个步骤背后的「为什么」讲清楚。
 
@@ -321,14 +321,14 @@ int main() {
 
 ### 实测数字（Radeon RX 9070 XT + ROCm 7.13）
 
-下面这张表是用 [`bench_ch4.py`](https://github.com/datawhalechina/hello-gpu/blob/dev/code/part1-profiling/chapter5/bench_ch4.py)（综合了上面骨架 A / B 两段流程）在 9070XT（gfx1201 / ROCm 7.13 / 原生 Ubuntu 24.04）上跑出来的实测值：
+下面这张表是用 [`bench_ch4.py`](https://github.com/datawhalechina/hello-gpu/blob/dev/code/part1-profiling/chapter5/bench_ch4.py)（综合了上面骨架 A / B 两段流程）在 RX 9070 XT（gfx1201 / ROCm 7.13 / 原生 Ubuntu 24.04）上跑出来的实测值：
 
 <details>
-<summary>实测输出：Ch4 benchmark @ 9070XT + ROCm 7.13（原生 Ubuntu 24.04）</summary>
+<summary>实测输出：Ch4 benchmark @ RX 9070 XT + ROCm 7.13（原生 Ubuntu 24.04）</summary>
 
-下表是用 `bench_ch4.py` 在 9070XT（gfx1201 / ROCm 7.13 / 原生 Ubuntu 24.04）上的实测值：
+下表是用 `bench_ch4.py` 在 RX 9070 XT（gfx1201 / ROCm 7.13 / 原生 Ubuntu 24.04）上的实测值：
 
-| 实验 | 算子 / 公式 | shape / dtype | 时延（median / min） | 有效带宽 | 算术强度 |
+| 实验 | 算子 / 公式 | shape / dtype | 延迟（median / min） | 有效带宽 | 算术强度 |
 | ---- | ---- | ---- | ----: | ----: | ----: |
 | 骨架 A — PyTorch vector add | `c = a + b` | 4096² / fp32 | 0.337 / 0.335 ms | 600.8 GB/s | ~0.083 FLOP/B |
 | 骨架 A — PyTorch vector add | `c = a + b` | 4096² / fp16 | 0.173 / 0.171 ms | 587.3 GB/s | ~0.17 FLOP/B |
@@ -353,18 +353,18 @@ hipcc: 7.13.99004 / arch gfx1201 / 原生 Ubuntu 24.04 (6.17.0-35-generic)
       256 MiB |   0.900 ms |   568.6
 ```
 
-> 时延口径：vector add 用 GPU event 逐次计时，同时报告 min 与 median；vector copy 用「一段 event 覆盖 200 次连续 launch 后求平均」，列出的就是单次平均（≈ min）。原始日志见 `code/part1-profiling/chapter5/logs/`。有效带宽的口径：vector add 按 `3 × elems × dtype` 字节（两读一写），vector copy 按 `2 × footprint` 字节（一读一写）。
+> 延迟口径：vector add 用 GPU event 逐次计时，同时报告 min 与 median；vector copy 用「一段 event 覆盖 200 次连续 launch 后求平均」，列出的就是单次平均（≈ min）。原始日志见 `code/part1-profiling/chapter5/logs/`。有效带宽的口径：vector add 按 `3 × elems × dtype` 字节（两读一写），vector copy 按 `2 × footprint` 字节（一读一写）。
 
 </details>
 
 读这张表的关键点：
 
-- **memory-bound 算子的「快」上限就是带宽**：vector add 在 fp32 / fp16 下有效带宽几乎一致（600.8 vs 587.3 GB/s），但 fp16 的时间只有 fp32 的约一半（0.171 vs 0.335 ms）——这正是直觉表里「改 dtype 之后吞吐翻倍 ≠ 真省了带宽」那条的实测印证。fp16 真省到的是 byte 数，算术强度（FLOP/B）跟着翻倍。
-- **vector copy 的 footprint 扫描能画出 cache 层级**：8 MiB 时有效带宽冲到 785.1 GB/s（落在 L2 命中区，数据基本没往返 GDDR6），64 MiB 以后跌到 ~570 GB/s 并稳定下来——这就是踩进 GDDR6 平台后的真实带宽。这条曲线就是后面所有 memory-bound 算子要参照的带宽线。
+- **访存受限算子的「快」上限就是带宽**：vector add 在 fp32 / fp16 下有效带宽几乎一致（600.8 vs 587.3 GB/s），但 fp16 的时间只有 fp32 的约一半（0.171 vs 0.335 ms）——这正是直觉表里「改 dtype 之后吞吐翻倍 ≠ 真省了带宽」那条的实测印证。fp16 真省到的是 byte 数，算术强度（FLOP/B）跟着翻倍。
+- **vector copy 的 footprint 扫描能画出 cache 层级**：8 MiB 时有效带宽冲到 785.1 GB/s（落在 L2 命中区，数据基本没往返 GDDR6），64 MiB 以后跌到 ~570 GB/s 并稳定下来——这就是踩进 GDDR6 平台后的真实带宽。这条曲线就是后面所有 访存受限算子要参照的带宽线。
 
 > 太小的输入（几 MiB 以下）测出来的不是带宽峰值，是 launch overhead——每次 copy 真正干活只有几 μs，被启动开销稀释。太大的输入又只能看到 GDDR6 平台。要看 cache 层级必须跑 footprint 扫描，而不是只跑一个 size。
 
-> 三段骨架本身只是流程模板；实测数字请按[第 4 章 4.5 节](../../part0-intro/chapter4/index.md)的实验底稿习惯，落到 `code/part1-profiling/chapter5/` 下的记录里，写清楚硬件、命令、原始输出和结论，几天后回来才复现得了。
+> 三段骨架本身只是流程模板；实测数字请按[第 4 章 4.6 节](../../part0-intro/chapter4/index.md)的实验底稿习惯，落到 `code/part1-profiling/chapter5/` 下的记录里，写清楚硬件、命令、原始输出和结论，几天后回来才复现得了。
 
 ## 5.5 避免测量陷阱
 
@@ -387,7 +387,7 @@ hipcc: 7.13.99004 / arch gfx1201 / 原生 Ubuntu 24.04 (6.17.0-35-generic)
 
 避免伪优化的核心方法也很简单：**让实验可复查。**
 
-一次好的性能实验，至少应该留下：输入规模、数据类型、硬件和软件版本、运行命令、原始输出、统计方式、结论。这样几天以后你再回来，或者别人帮你 review 时，才知道这个数字到底从哪里来——这正是[第 4 章 4.5 节](../../part0-intro/chapter4/index.md)强调的实验底稿习惯。
+一次好的性能实验，至少应该留下：输入规模、数据类型、硬件和软件版本、运行命令、原始输出、统计方式、结论。这样几天以后你再回来，或者别人帮你 review 时，才知道这个数字到底从哪里来——这正是[第 4 章 4.6 节](../../part0-intro/chapter4/index.md)强调的实验底稿习惯。
 
 如果你现在只记住一条，那就是：**优化前先建立可信 baseline。** 没有 baseline，后面所有「更快了」都没有参照物。
 

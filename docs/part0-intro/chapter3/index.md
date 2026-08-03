@@ -9,7 +9,7 @@ description: "Hello GPU 第3章 · VGPR/SGPR/LDS 与占用率，从寄存器到 
 
 > 上一章我们跟着一次 kernel 提交看清了线程怎么划分、波前怎么落到硬件上执行——编程模型这张地图已经在你手上。这一章补上硬件体系结构的另一半。本章会做四件事：搞清楚 GPU 能同时塞下多少活儿（片上资源 VGPR/SGPR/LDS 与占用率）、把数据从寄存器到显存的内存层级理清楚、弄懂为什么读取地址的排列能让带宽差出好几倍（合并访存与 LDS bank 冲突）、最后认识一下矩阵专用指令 WMMA。
 >
-> 这几样是 Part 2 算子优化的直接地基，每一样都有对应的实战章会展开：合并访存在 [第 8 章 Element-Wise](../../part2-kernels/chapter8/index.md)、LDS 协作与 bank 在 [第 9 章 Reduction](../../part2-kernels/chapter9/index.md)、占用率/分块/寄存器累加在 [第 11 章 GEMM](../../part2-kernels/chapter11/index.md)、WMMA 与融合在 [第 12 章 Attention/Fusion](../../part2-kernels/chapter12/index.md)。本章只把概念和直觉立起来，具体怎么优化，留到对应算子章。
+> 这几样是 Part 2 算子优化的直接地基，每一样都有对应的实战章会展开：合并访存在 [第 8 章 Element-Wise](../../part2-kernels/chapter8/index.md)、LDS 协作与 bank 在 [第 9 章 Reduction](../../part2-kernels/chapter9/index.md)、占用率/分块/寄存器累加在 [第 11 章 GEMM-Like(../../part2-kernels/chapter11/index.md)、WMMA 与融合在 [第 12 章 Fusion：融合算子](../../part2-kernels/chapter12/index.md)。本章只把概念和直觉立起来，具体怎么优化，留到对应算子章。
 
 本章对应代码在：
 
@@ -31,15 +31,15 @@ code/part0-intro/
 
 **决定 GPU 能同时塞下多少活儿的，是几种片上资源里谁先被用光。**
 
-当一个 wave 在等数据（访存）时，硬件不会干等，而是切到另一个已经准备好的 wave 去跑——这就是用「同时跑很多 wave」把等待的时间藏起来（术语叫延迟隐藏）。所以关键问题不是「线程数占满没有」，而是「硬件还能同时塞下多少工作」。对 `gfx1201`，ROCm 规格给出的资源盘子是：**768 KiB 向量寄存器（VGPR）、32 KiB 标量寄存器（SGPR）和 128 KiB 片上内存（LDS）**。[ROCm GFX1201 register and LDS specifications](https://rocm.docs.amd.com/en/latest/reference/gpu-specs.html) 注意，这些只是硬件的总容量；你某个具体 kernel 到底用掉多少寄存器、多少 LDS、有没有溢出到 scratch，得从编译结果或 profiling 里读出来才知道。
+当一个 wavefront 在等数据（访存）时，硬件不会干等，而是切到另一个已经准备好的 wavefront 去跑——这就是用「同时跑很多 wavefront」把等待的时间藏起来（术语叫延迟隐藏）。所以关键问题不是「线程数占满没有」，而是「硬件还能同时塞下多少工作」。对 `gfx1201`，ROCm 规格给出的资源盘子是：**768 KiB 向量寄存器（VGPR）、32 KiB 标量寄存器（SGPR）和 128 KiB 片上内存（LDS）**。[ROCm GFX1201 register and LDS specifications](https://rocm.docs.amd.com/en/latest/reference/gpu-specs.html) 注意，这些只是硬件的总容量；你某个具体 kernel 到底用掉多少寄存器、多少 LDS、有没有溢出到 scratch，得从编译结果或 profiling 里读出来才知道。
 
 把 GPU 想成一座工厂：VGPR/SGPR 是每个工人的私人工具柜，LDS 是车间共用的工作台。一座工厂能同时开工多少条产线（也就是占用率），不取决于工人总数，而取决于哪种资源先被用光——工具柜塞太满，能容纳的工人就少；工作台分太大，能并排的产线就少。
 
 ::: figure fig-ch2-residency-resources
 ```mermaid
 flowchart LR
-    K[compiled kernel resources] --> V[VGPR per wave/lane]
-    K --> S[SGPR per wave]
+    K[compiled kernel resources] --> V[VGPR per wavefront/lane]
+    K --> S[SGPR per wavefront]
     K --> L[LDS per workgroup]
     V --> R[resident waves/workgroups: bounded by the first exhausted resource]
     S --> R
@@ -47,14 +47,14 @@ flowchart LR
     R --> H[more eligible work can help hide latency]
 ```
 
-驻留资源图：VGPR、SGPR、LDS 都可能成为上限；图不是从总容量直接计算 occupancy 的公式。
+驻留资源图：VGPR、SGPR、LDS 都可能成为上限；图不是从总容量直接计算 占用率 的公式。
 :::
 
-这三样东西分工不同：VGPR 存每个 lane 自己的向量临时值；SGPR 存整个 wave 可以共用的标量状态；LDS 则是 workgroup 用来互相协作、复用数据的那块片上内存。
+这三样东西分工不同：VGPR 存每个 lane 自己的向量临时值；SGPR 存整个 wavefront 可以共用的标量状态；LDS 则是 workgroup 用来互相协作、复用数据的那块片上内存。
 
-所以别指望从「LDS 有 128 KiB」这种总数，直接算出某个 kernel 的占用率（Occupancy，也就是能同时塞下多少 wave）；更别以为占用率越高越好。真实的有效并发，是寄存器用量、LDS 的分配粒度、workgroup 的形状、硬件上限、能同时跑几个 workgroup、以及瓶颈到底在哪，这些因素一起决定的。比如硬把寄存器压得很低，反而可能逼出 spill（数据被挤到慢得多的显存里）或额外的指令。正确的顺序永远是：先把算法和访存逻辑写对，再去读编译器报告的资源用量，最后用 profiling 判断它是不是真的在干等访存。
+所以别指望从「LDS 有 128 KiB」这种总数，直接算出某个 kernel 的占用率（Occupancy，也就是能同时塞下多少 wavefront）；更别以为占用率越高越好。真实的有效并发，是寄存器用量、LDS 的分配粒度、workgroup 的形状、硬件上限、能同时跑几个 workgroup、以及瓶颈到底在哪，这些因素一起决定的。比如硬把寄存器压得很低，反而可能逼出 spill（数据被挤到慢得多的显存里）或额外的指令。正确的顺序永远是：先把算法和访存逻辑写对，再去读编译器报告的资源用量，最后用 profiling 判断它是不是真的在干等访存。
 
-**迁移范围：** 本节的这些容量数字，只锚定 gfx1201 的规格；「哪种资源先用光，就先限制能塞多少」这个思路可以迁移，但具体的占用率、会不会 spill、最佳的 tile 大小，都必须针对目标 GPU、编译器和 kernel 单独去测。占用率与分块在真实算子里怎么权衡，[第 11 章 GEMM](../../part2-kernels/chapter11/index.md) 会第一次系统地做。
+**迁移范围：** 本节的这些容量数字，只锚定 gfx1201 的规格；「哪种资源先用光，就先限制能塞多少」这个思路可以迁移，但具体的占用率、会不会 spill、最佳的 tile 大小，都必须针对目标 GPU、编译器和 kernel 单独去测。占用率与分块在真实算子里怎么权衡，[第 11 章 GEMM-Like(../../part2-kernels/chapter11/index.md) 会第一次系统地做。
 
 ## 3.2 内存层级：从寄存器到 GDDR6
 
@@ -170,14 +170,14 @@ hipcc --offload-arch=gfx1201 -O3 -std=c++17 global_memory_access.hip -o global_m
 
 ## 3.4 LDS bank 冲突
 
-**LDS 快不快，还要看同一个 wave 里的线程，访问的地址是怎么排布的。**
+**LDS 快不快，还要看同一个 wavefront 里的线程，访问的地址是怎么排布的。**
 
-LDS 内部可以并行访问的小单元叫**存储体（Bank）**。用收银台来理解最直观：LDS 好比一排并行的收银台，一个 wave 的 32 个 lane 同时来结账。stride-1 时一人一台，瞬间结完；如果 32 人全挤向同一个台（stride-32），只能排长队，于是慢了好几倍；把每人错开一个台（stride-33），队伍又散了。
+LDS 内部可以并行访问的小单元叫**存储体（Bank）**。用收银台来理解最直观：LDS 好比一排并行的收银台，一个 wavefront 的 32 个 lane 同时来结账。stride-1 时一人一台，瞬间结完；如果 32 人全挤向同一个台（stride-32），只能排长队，于是慢了好几倍；把每人错开一个台（stride-33），队伍又散了。
 
 ::: figure fig-ch2-lds-pattern
 ```mermaid
 flowchart TB
-    L[lane 0, 1, 2, ... within one wave] --> A[stride 1: base + lane]
+    L[lane 0, 1, 2, ... within one wavefront] --> A[stride 1: base + lane]
     L --> B[stride 32: base + 32 × lane]
     L --> C[stride 33: base + 33 × lane]
     A --> M[measured LDS access pattern]
@@ -190,7 +190,7 @@ LDS 地址映射示意：它显示实验的索引模式，而不是声称 gfx120
 
 我们的受控实验测得：在这套 wave32 / 共享内存索引方式下，stride-32 比 stride-1 慢约 5 倍；stride-33 错开一个台后基本回到基线。需要强调：我们测出了这个惩罚，但**没有**把「bank 有几个、怎么取模」当成 gfx1201 的官方结论——那要靠文档或计数器确认。**选做实验：共享数组索引步长 → bank 冲突**
 
-核心 kernel 先把一块 `__shared__` 填好，再让每个 lane 按 `wave * kRegion + lane * Stride + (iteration & 31)` 反复读取。`Stride` 改变的是同一 wave 内 32 个 lane 落到哪些 bank 上。
+核心 kernel 先把一块 `__shared__` 填好，再让每个 lane 按 `wavefront * kRegion + lane * Stride + (iteration & 31)` 反复读取。`Stride` 改变的是同一 wavefront 内 32 个 lane 落到哪些 bank 上。
 
 <details>
 <summary>代码：lds_bank_conflict.hip（核心 kernel）</summary>
@@ -212,12 +212,12 @@ __global__ void lds_kernel(const float* input, float* output, std::size_t n) {
     if (tid >= n) {
         return;
     }
-    unsigned wave = threadIdx.x / kWaveSize;
+    unsigned wavefront = threadIdx.x / kWaveSize;
     unsigned lane = threadIdx.x % kWaveSize;
     float accumulator = input[tid];
     for (unsigned int iteration = 0; iteration < kReadIterations;
          ++iteration) {
-        unsigned index = wave * kRegion + lane * Stride +
+        unsigned index = wavefront * kRegion + lane * Stride +
                                  (iteration & 31);
         accumulator += shared_pointer[index];
     }
@@ -248,7 +248,7 @@ hipcc --offload-arch=gfx1201 -O3 -std=c++17 lds_bank_conflict.hip -o lds_bank_co
 
 LDS 的协作加载、同步与 bank 布局在真实算子里怎么用（以及 Wave Shuffle 这种更细的协作），[第 9 章 Reduction](../../part2-kernels/chapter9/index.md) 会结合归约系统地讲。
 
-**迁移范围：** 「先看同一个 wave 的共享地址怎么排，再动手测」这个方法可以迁移；但本节的具体结果，只属于当前这个 wave32、这种数组布局、这个循环、这个编译器和 gfx1201 的受控场景。
+**迁移范围：** 「先看同一个 wavefront 的共享地址怎么排，再动手测」这个方法可以迁移；但本节的具体结果，只属于当前这个 wave32、这种数组布局、这个循环、这个编译器和 gfx1201 的受控场景。
 
 ## 3.5 矩阵指令 WMMA
 
@@ -343,7 +343,7 @@ hipcc --offload-arch=gfx1201 -O3 -std=c++17 rdna4_wmma.hip -o rdna4_wmma
 | `valu` | 0.037200 [0.036080, 0.038320] | 0.902001 | 基线 |
 | `wmma` | 0.016160 [0.016121, 0.016160] | 2.076388 | 2.30× |
 
-WMMA 在真实算子里怎么用（含分块、fragment 排布、与融合的配合），[第 11 章 GEMM](../../part2-kernels/chapter11/index.md) 和 [第 12 章 Attention/Fusion](../../part2-kernels/chapter12/index.md) 会展开。
+WMMA 在真实算子里怎么用（含分块、fragment 排布、与融合的配合），[第 11 章 GEMM-Like(../../part2-kernels/chapter11/index.md) 和 [第 12 章 Fusion：融合算子](../../part2-kernels/chapter12/index.md) 会展开。
 
 **迁移范围：** 这条指令、wave32 的碎片宽度和布局，只适用于 gfx12/RDNA 4；「先验证布局和对数，再比较两条语义相同的路径」这个方法可以迁移，但任何真正的大 GEMM，都得单独做自动调参（autotune）并和库实现对照。
 
@@ -354,10 +354,10 @@ WMMA 在真实算子里怎么用（含分块、fragment 排布、与融合的配
 1. **启动（launch）：** 输出的逻辑分块是怎么切的？`grid`、`block`、`tid` 加上越界保护，是不是正好覆盖全部、且只覆盖一次？
 2. **工作组/波前：** 目标机器实际的波前大小是多少？组内的协作和分支，有没有跨越那些不该混在一起的 lane？
 3. **放在哪执行（placement）：** 哪些正确性假设，依赖了「同一个 workgroup 共享 LDS/同步」？你是不是错误地假定了固定的 CU/WGP 结构？
-4. **控制流：** 判断条件会不会让同一个 wave 的 lane 走进不同的长路径？能不能靠调整数据布局来改善一致性，又不损害语义？
+4. **控制流：** 判断条件会不会让同一个 wavefront 的 lane 走进不同的长路径？能不能靠调整数据布局来改善一致性，又不损害语义？
 5. **资源占用（residency）：** 编译产物用了多少 VGPR、SGPR、LDS、scratch？几种候选 tile/block 的资源变化，记录了吗？
 6. **数据路径：** 每个数组在哪段范围里被复用？逻辑字节和真实硬件流量，有没有分清？
-7. **全局地址：** 同一个 wave 的 lane，一轮里读的逻辑下标是不是相邻的？每种步长/布局，越界处理都对吗？
+7. **全局地址：** 同一个 wavefront 的 lane，一轮里读的逻辑下标是不是相邻的？每种步长/布局，越界处理都对吗？
 8. **LDS：** 把「lane → 共享地址」列出来之后，改变填充/步长，同步和数值结果还保持一致吗？用对照实验测过吗？
 9. **矩阵路径：** 如果用了 WMMA，目标是不是 gfx12？碎片 A/B/C/D 的布局、波前大小、CPU 参考，是不是全都对得上？
 10. **证据：** 硬件、软件、源码版本、规模、预热/重复次数，固定了吗？报告的是中位数和多个独立进程的范围，而不是单次最好值吗？
@@ -365,14 +365,14 @@ WMMA 在真实算子里怎么用（含分块、fragment 排布、与融合的配
 | 结论类型 | 例子 | 下一步 |
 | --- | --- | --- |
 | **可迁移** | 先做边界正确性，再分离逻辑指标与物理归因 | 在新 kernel 中继续采用这套验证顺序 |
-| **需重测** | stride、LDS layout、VGPR/LDS 资源、occupancy、分支代价 | 更换 GPU、dtype、shape、编译器或算法后重新 benchmark/profile |
+| **需重测** | stride、LDS layout、VGPR/LDS 资源、占用率、分支代价 | 更换 GPU、dtype、shape、编译器或算法后重新 benchmark/profile |
 | **仅 gfx12** | `__builtin_amdgcn_wmma_*_w32_gfx12`、WMMA fragment layout | 仅在 gfx12 编译/运行守卫下使用；其他 target 查其对应文档 |
 
 ## 本章小结
 
-- 一个 wave 等访存时，硬件会切到别的 wave 去跑（延迟隐藏）；能同时塞下多少 wave，取决于 VGPR/SGPR/LDS 哪种资源先用光，而不是线程数。占用率不是越高越好。
+- 一个 wavefront 等访存时，硬件会切到别的 wavefront 去跑（延迟隐藏）；能同时塞下多少 wavefront，取决于 VGPR/SGPR/LDS 哪种资源先用光，而不是线程数。占用率不是越高越好。
 - 内存层级越往下越大、越慢；LDS 是你显式分配的片上存储，**不是缓存**；**逻辑字节不等于物理流量**。
-- 让相邻 lane 读相邻下标（合并访存）能显著抬高带宽；LDS 要注意同一 wave 的地址排布避免 bank 冲突；WMMA 让整排 lane 协作算矩阵、比通用 VALU 快，但布局是 gfx12 定死的。
+- 让相邻 lane 读相邻下标（合并访存）能显著抬高带宽；LDS 要注意同一 wavefront 的地址排布避免 bank 冲突；WMMA 让整排 lane 协作算矩阵、比通用 VALU 快，但布局是 gfx12 定死的。
 - 这些概念的具体优化，分别在 Part 2 的第 8/9/11/12 章结合真实算子展开。至此入门篇的硬件心智模型就完整了；下一章我们跑通第一个真正的 GPU 程序 vector add，并建立 Roofline 心智模型。
 
 ## 自我检验
@@ -383,7 +383,7 @@ WMMA 在真实算子里怎么用（含分块、fragment 排布、与融合的配
 2. 能区分寄存器驻留值、显式 LDS 访问和全局访存这三类操作，并说明为什么 LDS 不是 cache。
 3. 能区分规格容量、逻辑字节和物理 GDDR6 流量这三个概念。
 4. 能解释为什么合并访存（连续下标）能抬高带宽，以及把下标打散为什么会掉到约 1/8。
-5. 能说明 LDS bank 冲突为什么发生（同一 wave 挤同一个 bank），以及 stride 错开为什么能缓解。
+5. 能说明 LDS bank 冲突为什么发生（同一 wavefront 挤同一个 bank），以及 stride 错开为什么能缓解。
 6. 能说出 WMMA 相对普通 VALU 快在哪里、代价是什么，以及它为什么不能等同于 rocBLAS 或理论峰值。
 
 ## 延伸阅读
@@ -392,4 +392,4 @@ WMMA 在真实算子里怎么用（含分块、fragment 排布、与融合的配
 - [AMD Radeon RX 9070 XT 产品规格](https://www.amd.com/en/products/graphics/desktops/radeon/9000-series/amd-radeon-rx-9070xt.html)：显存容量、位宽、理论板卡带宽与理论计算规格。
 - [GPUOpen: Using the Matrix Cores of AMD RDNA 4 architecture GPUs](https://gpuopen.com/learn/using_matrix_core_amd_rdna4/)：仅 gfx12 的 WMMA fragment layout 与 intrinsic 示例。
 - 选做实验：[`code/part0-intro/chapter3/`](https://github.com/datawhalechina/hello-gpu/tree/dev/code/part0-intro/chapter3)（global_memory_access / lds_bank_conflict / rdna4_wmma 受控对照）。
-- 实战展开：[第 8 章 Element-Wise](../../part2-kernels/chapter8/index.md)、[第 9 章 Reduction](../../part2-kernels/chapter9/index.md)、[第 11 章 GEMM](../../part2-kernels/chapter11/index.md)、[第 12 章 Attention/Fusion](../../part2-kernels/chapter12/index.md)。
+- 实战展开：[第 8 章 Element-Wise](../../part2-kernels/chapter8/index.md)、[第 9 章 Reduction](../../part2-kernels/chapter9/index.md)、[第 11 章 GEMM-Like(../../part2-kernels/chapter11/index.md)、[第 12 章 Fusion：融合算子](../../part2-kernels/chapter12/index.md)。

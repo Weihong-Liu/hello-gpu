@@ -219,7 +219,7 @@ HIP 与 Triton 程序采用相同的实验契约：
 1, 31, 32, 33, 255, 257 columns
 ```
 
-这些 shape 分别触发单元素行、wave 边缘、跨 wave、block 边缘和非二次幂尾部。HIP 用 `column < columns` 的循环条件保护尾部；Triton 用 mask 把补齐位置排除在 load/store 之外。
+这些 shape 分别触发单元素行、wavefront 边缘、跨 wavefront、block 边缘和非二次幂尾部。HIP 用 `column < columns` 的循环条件保护尾部；Triton 用 mask 把补齐位置排除在 load/store 之外。
 
 ## 10.5 HIP baseline：把三次 dispatch 看清楚
 
@@ -323,13 +323,13 @@ output[base + column] =
 
 这里重新计算 `exp` 是有意的空间—计算权衡：它避免分配 `R×C` 的全局 `exp_tmp`，也不要求一整行都能塞入 LDS。重算是否值得，要由目标 shape 上的实测决定。
 
-## 10.7 Wave32、LDS 与融合边界
+## 10.7 wave32、LDS 与融合边界
 
-### 10.7.1 当前版本没有使用 wave shuffle
+### 10.7.1 当前版本没有使用 wavefront shuffle
 
-目标 GPU 以 Wave32 执行线程，但当前融合 kernel 使用的是**整个 block 的 LDS 树归约**。即使一个 block 包含多个 wave，`__syncthreads()` 也会让它们在每一轮正确会合。
+目标 GPU 以 wave32 执行线程，但当前融合 kernel 使用的是**整个 block 的 LDS 树归约**。即使一个 block 包含多个 wavefront，`__syncthreads()` 也会让它们在每一轮正确会合。
 
-这意味着不能把当前版本描述成“wave-level Softmax”。后续可以先在每个 wave 内用 shuffle 归约，再让少量 wave partial 进入 LDS；那是新的受控实验，不属于本章首版代码。
+这意味着不能把当前版本描述成“wavefront-level Softmax”。后续可以先在每个 wavefront 内用 shuffle 归约，再让少量 wavefront partial 进入 LDS；那是新的受控实验，不属于本章首版代码。
 
 ### 10.7.2 为什么 block 必须是二次幂
 
@@ -343,7 +343,7 @@ block ∈ {1, 2, 4, ..., 1024}
 
 ### 10.7.3 LDS 容量不是唯一边界
 
-当前 kernel 只申请 `block × sizeof(float)` 的动态 LDS；`block=256` 时逻辑申请量是 1024 Byte。这个数能从源码计算，但 occupancy、VGPR、scratch 和实际驻留 block 数不能只靠源码断言，需读取编译/profile 结果。
+当前 kernel 只申请 `block × sizeof(float)` 的动态 LDS；`block=256` 时逻辑申请量是 1024 Byte。这个数能从源码计算，但 占用率、VGPR、scratch 和实际驻留 block 数不能只靠源码断言，需读取编译/profile 结果。
 
 不同 shape 还会碰到不同边界：
 
@@ -431,7 +431,7 @@ python chapter10/softmax_triton.py \
 | `[-1002,-1001,-1000]` | 全部下溢为 0，出现 `0/0` | 有限，且等价于 `[-2,-1,0]` | 用 `-1000` 行覆盖 |
 | `x` 与 `x+常数` | 实现若不稳定会分叉 | 两行结果在容差内一致 | 三种行偏移可扩展检查 |
 | `C=1` | 分母与分子相同 | 输出严格接近 1 | 自动覆盖 |
-| `C=31/32/33` | wave 边缘与 mask 错误 | 无越界，行和接近 1 | 自动覆盖 |
+| `C=31/32/33` | wavefront 边缘与 mask 错误 | 无越界，行和接近 1 | 自动覆盖 |
 | `C=255/257` | block/二次幂尾部错误 | 所有列与参考一致 | 自动覆盖 |
 | `C=4097` | 更长的线程循环/逻辑块 | 正确；性能结论待测 | 建议练习 |
 | 相同最大值出现多次 | max 归约次序变化 | 概率相等且有限 | 建议练习 |
@@ -587,7 +587,7 @@ cols = 31, 32, 33, 255, 256, 257, 1024, 4097
 
 ### 练习 3：只替换 HIP 归约收尾
 
-保持“一 block 一行”和线程访问映射不变，把 LDS 全树归约改为：wave 内 shuffle 得 partial，再用 LDS 合并各 wave partial。
+保持“一 block 一行”和线程访问映射不变，把 LDS 全树归约改为：wavefront 内 shuffle 得 partial，再用 LDS 合并各 wavefront partial。
 
 **成功标准：**先证明边界 shape 正确，再用 trace 比较同步、LDS 与资源字段；不能同时改 block、输入或计时次数。
 
@@ -605,7 +605,7 @@ cols = 31, 32, 33, 255, 256, 257, 1024, 4097
 
 ## 正式实验结果
 
-![Chapter 9 Row Softmax 性能对比](./images/softmax-performance.png)
+![Chapter 10 Row Softmax 性能对比](./images/softmax-performance.png)
 
 主 shape 为 `4096×1024` FP32。HIP 三 kernel baseline 为 `0.744228 ms`，融合 LDS 版为 `0.115781 ms`；Triton compact/wide 分别为 `0.038361/0.060801 ms`。当前 shape 上 `t1-wide` 反而慢于 `t0-compact`，因此“更宽 block/更多 warps”被记录为负结果，而不是默认优化。
 
@@ -617,7 +617,7 @@ cols = 31, 32, 33, 255, 256, 257, 1024, 4097
 - 直接计算指数会在大正数上溢出、在大负数上下溢；减去行最大值利用平移不变性得到稳定公式。
 - Softmax 可以拆成 `max reduction → exp → sum reduction → normalize`。
 - HIP 三 kernel baseline 把阶段和全局中间张量显式展开；融合版用一个 block、两次 LDS 归约完成一行，并通过重算指数避免 `exp_tmp`。
-- Wave32 是硬件执行背景，但当前 HIP 首版是 block 级 LDS 算法，不应误称为 wave shuffle 优化。
+- wave32 是硬件执行背景，但当前 HIP 首版是 block 级 LDS 算法，不应误称为 wavefront shuffle 优化。
 - Triton 用一个 program 描述一整行，`BLOCK_SIZE` 与 mask 负责逻辑覆盖，`num_warps` 是需要实测的编译/调度参数。
 - 非二次幂列、极大正负平移、单元素行、长行和 dtype 都属于正确性矩阵，而不是附加项。
 - 本章已完成实现、边界检查、3 个独立正式进程、逐实现 profile 与 curated evidence。

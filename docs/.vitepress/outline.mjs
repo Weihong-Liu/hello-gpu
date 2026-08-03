@@ -73,6 +73,7 @@ export const parts = [
           ['跑通 vector add', '编写、编译并运行一个最小 HIP kernel，确认结果正确。'],
           ['建立 baseline benchmark', '用固定输入、热身、重复运行和 GPU event 建立可复查的计时 baseline。'],
           ['性能分析：CPU vs GPU 与带宽利用率', '对比 CPU/GPU 实测耗时，算算术强度判断 memory-bound，再用实测带宽对标称带宽估算利用率。'],
+          ['dispatch 开销：launch 本身要多久', '从 HIP API 到 AQL packet 的 dispatch 链路、async/sync 实测对比，以及 launch 开销对短 kernel 的意义。'],
           ['留下实验底稿', '说明源码、命令输出、benchmark 配置应该如何对应到一份可复查的实验记录。']
         ]
       }
@@ -382,6 +383,15 @@ export const appendices = [
     dir: 'appendix-b-switch-gpu',
     path: '/appendix/appendix-b-switch-gpu/',
     source: 'docs/appendix/appendix-b-switch-gpu/index.md',
+  },
+  {
+    title: '附录 C · 裸金属视角：绕过 HIP 直接写 AQL',
+    summary: 'KFD dispatch 实测、ISA 编码实战，理解 HIP 底下发生了什么',
+    lead: '第 4.5 节讲了 dispatch 开销。本附录把这层彻底掀开：直接绕过 HIP，通过 Linux 的 KFD 驱动把 dispatch packet 写进 GPU 队列，看看裸金属到底能省多少、以及「手写 ISA」是什么体验。素材来自 t0-gpu 项目在 RX 7900 XTX 上的真实实验：KFD async 2.26μs vs HIP 2.6μs、v_perm_b32 的 4 个 ISA 编码 bug、以及 600 行 Rust GEMM 反超 rocBLAS 的实测。',
+    slug: 'appendix-c',
+    dir: 'appendix-c-kfd-bare-metal',
+    path: '/appendix/appendix-c-kfd-bare-metal/',
+    source: 'docs/appendix/appendix-c-kfd-bare-metal/index.md',
   },
 ]
 
