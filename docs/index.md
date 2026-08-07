@@ -26,7 +26,7 @@ features:
   - title: ☁️ 云算力资源
     details: 无需本地 GPU，浏览器即可使用 AMD Radeon Cloud 或 AUP Learning Cloud 开展 ROCm 实践
     link: /cloud/
-  - title: 📖 入门 + 4 篇正文，共 18 章
+  - title: 📖 全书 5 篇正文、20 章
     details: 入门与硬件速通 → Profiling 实战 → 算子优化 + 刷题 → Agent（算子层）→ 真实模型 + Agent
 ---
 

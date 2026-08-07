@@ -1,4 +1,4 @@
-export const repoBaseUrl = 'https://github.com/datawhalechina/hello-gpu/blob/main'
+export const repoBaseUrl = 'https://github.com/datawhalechina/hello-gpu/blob/dev'
 
 export const parts = [
   {
@@ -28,13 +28,13 @@ export const parts = [
         status: '🚧',
         lead: '本章不深入讲 ROCm 软件栈原理，只用最短路径帮你确认实验环境能不能继续往后跑。读完后，你应该能通过 uv sync 复现本篇环境，确认 ROCm 能看到 GPU，并跑通最小 HIP 程序。',
         sections: [
-          ['本教程的实验基线', '明确所有实验默认在 Radeon RX 9070 XT + ROCm 7.13 + 原生 Ubuntu 24.04 上验证，其他设备只参考方法。'],
-          ['原生 Linux 优先，WSL2 可用但受限', '说明 9070XT 主线实验优先使用原生 Linux；WSL2 可用于学习计算路径，但 rocm-smi 和硬件性能计数器能力受限。'],
-          ['同步本篇 uv 环境', '进入 code/part0-intro 后运行 uv sync，并用 activate-rocm.sh 激活 ROCm wheel 环境。'],
-          ['验证 GPU 可见性', '用 rocminfo 检查 GPU、驱动和 ROCm 运行时；rocm-smi 作为原生 Linux 的可选状态监控工具。'],
-          ['验证 PyTorch ROCm', '运行最小 PyTorch ROCm smoke test，确认框架能看到 GPU。'],
-          ['验证最小 HIP 程序', '直接用 hipcc 编译并运行最小 vector add 程序。'],
-          ['环境不通时先收集什么', '列出报错、版本、命令输出、硬件信息和日志，避免盲目排错。']
+          ['本教程的实验基线', '锚定书基线 RX 9070 XT / ROCm 7.13，全书实验数字都挂在这套组合上'],
+          ['平台边界：原生 Linux 优先，WSL2 可用', '原生 Linux 是唯一实验平台；WSL2 可跑通但不作性能结论'],
+          ['同步本篇 uv 环境', 'uv sync 拉取 ROCm wheel 并激活 venv'],
+          ['验证 GPU 可见性', 'rocminfo 确认 gfx1201 与驱动状态'],
+          ['验证 PyTorch ROCm', 'torch 版本与 HIP 后端的 smoke test'],
+          ['验证最小 HIP 程序', 'hipcc 编译并跑通最小 kernel'],
+          ['环境不通时先收集什么', '报错信息、驱动版本、uv 缓存等诊断素材清单'],
         ]
       },
       {
@@ -142,13 +142,15 @@ export const parts = [
         status: '✅',
         lead: '本章从最容易看懂的 Vector Add 开始，先认识“逐元素”到底是什么意思，再把同一个问题拆成两条可以独立选择的路线：HIP 篇带你看清线程、地址和显存访问，Triton 篇带你用较少代码表达一整块数据。两条路线最后回到同一组正确性与性能问题，让你知道工具不同，判断方法为什么仍然相通。',
         sections: [
-          ['先认识 Element-Wise', '从输出元素依赖关系出发，认识 Add、ReLU、Scale & Bias 等逐元素算子的共同结构。'],
-          ['用 Vector Add 固定问题', '用手算、PyTorch 参考与输入边界建立同一份正确性标准。'],
-          ['一次加法要搬多少数据', '数清一次加法背后的两次读取和一次写回，提出带宽受限假设。'],
-          ['HIP 篇：看清线程与显存', '从一线程一元素出发，依次观察连续访存、Grid-Stride Loop、向量化与尾部处理。'],
-          ['Triton 篇：用 Tile 快速表达', '从最小模板出发，理解 program、offset、mask、load/store，并用 Triton-Viz 查看数据访问。'],
-          ['HIP 与 Triton 怎样对应', '把 thread 与 program、标量索引与 tile offsets、边界判断与 mask 放在同一张表中。'],
-          ['复跑与练习', '统一运行正确性检查，尝试非整除长度、不同 block size 与简单逐元素变体。']
+          ['先认识 Element-Wise', '逐元素算子的形态与典型例子'],
+          ['固定数学语义与正确性标准', '先定义对/错再谈快慢：precheck/postcheck 口径'],
+          ['建立成本模型和瓶颈假设', '算术强度 1/12，访存受限的预期'],
+          ['HIP：从标量线程到受控访存实验', 'v0→v3 ladder：地址顺序、grid、向量化与尾部'],
+          ['Triton：从最小 Tile 到参数实验', 't0/t1：BLOCK_SIZE 与 num_warps 扫描'],
+          ['正确性、Benchmark 与 Profiling', '统一验收：正确性矩阵 + 可信计时 + trace'],
+          ['HIP 与 Triton 对照', '两条路线同一数学语义、不同抽象层次'],
+          ['负结果、适用边界与下一步', '哪些没优化成功、结论能迁移到什么范围'],
+          ['复跑、练习与验收', '复跑命令、练习与验收清单'],
         ]
       },
       {
@@ -157,16 +159,16 @@ export const parts = [
         status: '✅',
         lead: '本章撤掉 Element-Wise 中“每个输出彼此独立”的前提：很多输入要共同得到一个结果。公共部分先把串行求和画成并行树；HIP 篇深入 LDS、同步与 Wave Shuffle，Triton 篇用 program partial 和多阶段归约快速表达同一层次。',
         sections: [
-          ['什么是归约算子', '从多输入到少输出的数据依赖出发，区分 sum、max 与 argmax。'],
-          ['从串行求和到并行树', '手算一个小数组，对比线性依赖与树形依赖。'],
-          ['固定正确性与测量口径', '明确浮点误差、非二次幂长度和完整多阶段计时。'],
-          ['HIP atomic baseline', '用全局同地址争用建立最短的正确起点。'],
-          ['HIP LDS block 归约', '协作加载、同步并逐轮收缩活动线程，每个 block 最后一次 atomic。'],
-          ['HIP 二阶段归约', '先生成 bounded partial，再用独立 dispatch 完成跨 block 合并。'],
-          ['Triton t0：program partial', '说明一个 program 怎样覆盖一段输入并使用 tl.sum。'],
-          ['Triton t1：多阶段归约', '用 partial buffer 与第二次 dispatch 完成跨 program 合并。'],
-          ['HIP 与 Triton 的归约层次对照', '对齐局部和、组内归约与跨组合并。'],
-          ['复跑与练习', '覆盖 max、非二次幂、累加 dtype 与负结果分析。']
+          ['从“每个输出独立”到“大家合成一个结果”', '归约的数学语义：多输入合成单输出'],
+          ['手算一棵归约树', '串行求和与并行树，树高与精度'],
+          ['先固定正确性和测量口径', '语义、误差与计时口径先行'],
+          ['HIP atomic baseline：先得到最短的正确版本', 'atomic 直接相加的最短正确实现'],
+          ['HIP LDS：把全局竞争缩小到每个 block 一次', 'LDS 块内归约，全局只剩一次竞争'],
+          ['HIP 局部累加、Wave Shuffle 与二阶段 partial', 'warp 内 shuffle 与二阶段 partial'],
+          ['Triton：program partial + second reduction', 'Triton 的 partial 与第二次归约'],
+          ['把 HIP 与 Triton 放回同一棵树', '两条路线对照同一棵归约树'],
+          ['一键运行与 `rocprofv3` Profiling', '复跑与 profiling 入口'],
+          ['练习与验收', '练习与验收清单'],
         ]
       },
       {
@@ -175,15 +177,19 @@ export const parts = [
         status: '✅',
         lead: '本章把 Element-Wise 与 Reduction 组合起来：Softmax 既要逐元素取指数，又要两次归约。公共部分先用大数反例理解“减最大值”；HIP 篇观察中间写回与数据驻留，Triton 篇学习一行对应一个 program 的融合表达。',
         sections: [
-          ['归一化算子解决什么问题', '从 logits 到概率，先固定逐行 Softmax 语义。'],
-          ['为什么直接指数会溢出', '用小例子推导减最大值，而不是只给公式。'],
-          ['Softmax 由哪些基本模式组成', '拆成 max reduction、element-wise exp、sum reduction 与 normalize。'],
-          ['HIP baseline：三个 kernel', '先保证数值正确，并显式保留 max、exp/sum、normalize 阶段。'],
-          ['HIP fused：block 级 LDS 归约', '一行一个 block，在同一 kernel 中完成两次归约与归一化。'],
-          ['Triton t0 compact', '一行对应一个 program，使用紧凑 block 与 mask。'],
-          ['Triton t1 wide', '只改变 block size 与 num warps，并保留变慢的负结果。'],
-          ['HIP 与 Triton 的融合边界', '比较显式寄存器/LDS 控制与编译器生成映射。'],
-          ['稳定性压力测试与练习', '覆盖大正值、大负值、尾行、长行和不同 dtype。']
+          ['逐行 Softmax 到底算什么', 'softmax 的数学语义：按行归一化'],
+          ['为什么直接取指数会溢出', 'exp 溢出与数值稳定性的动机'],
+          ['拆成四种基本模式', '读整行、减 max、取指数、归一化四步'],
+          ['先固定正确性与计时口径', '语义、误差与计时口径先行'],
+          ['HIP baseline：把三次 dispatch 看清楚', 'max/sum/div 三次 kernel 的代价'],
+          ['HIP 行融合：一个 block 完成一行', 'LDS 行缓存与单 kernel 融合'],
+          ['wave32、LDS 与融合边界', 'wave32 与 LDS 容量决定的融合边界'],
+          ['Triton：一行对应一个 program', 'Triton 的行映射与在线归一化'],
+          ['稳定性与边界测试矩阵', '边界形状与数值稳定性测试'],
+          ['HIP 与 Triton 对照', '两条路线的层次对照'],
+          ['运行与读取结果', '运行输出与结果解读'],
+          ['用 rocprofv3 看融合发生在哪里', 'trace 验证 kernel 是否真的融合'],
+          ['练习', '练习与验收'],
         ]
       },
       {
@@ -192,16 +198,20 @@ export const parts = [
         status: '✅',
         lead: '本章第一次让同一份输入被多个输出反复使用。公共部分从点积和小矩阵开始画 tile；HIP 篇显式管理 LDS 与线程 fragment，Triton 篇用 program/tile 表达同一复用，并把 autotune 限制为可解释的受控实验。',
         sections: [
-          ['从点积看矩阵乘', '用小矩阵说明输出元素、M/N/K 与 row-major 地址。'],
-          ['为什么朴素实现重复读取', '区分算法级计算强度、源码请求字节和物理流量。'],
-          ['Tile 为什么能带来复用', '先画块级数据生命周期，再进入代码。'],
-          ['HIP naive：一线程一输出', '建立最短的正确点积 baseline。'],
-          ['HIP tiled：LDS 分块', '协作加载 A/B tile，处理同步与 M/N/K 尾块。'],
-          ['寄存器分块等进阶方向', '作为下一轮单变量实验设计，不冒充已实现版本。'],
-          ['Triton baseline：用 tl.dot 写 tiled Matmul', '解释 program id、M/N tile 与 K 循环。'],
-          ['Triton grouped：只改变 program 排序', '固定 tile 与 warps，观察范围重叠的负结果。'],
-          ['HIP 与 Triton 的分块层次对照', '比较 block/thread fragment 与 program/tile。'],
-          ['复跑与练习', '覆盖非方阵、非整除形状、转置布局与参数反例。']
+          ['从点积看矩阵乘', '矩阵乘的数学语义与逐点积视角'],
+          ['为什么朴素实现重复读取', '朴素实现的访存放大'],
+          ['Tile 为什么能带来复用', '分块后的数据复用与算术强度'],
+          ['HIP v0：一线程一输出', '最短正确版本'],
+          ['HIP v1：LDS 分块', 'LDS 分块与协同加载'],
+          ['寄存器分块：为什么一个 thread 会计算多个输出', '寄存器分块与输出复用'],
+          ['HIP 进阶实验怎样保持单变量', '进阶实验的单变量控制'],
+          ['Triton t0：用 `tl.dot` 表达同一分块', 'Triton 的 tiled matmul'],
+          ['Triton t1：Grouped ordering 改变什么', 'program 排序对访存的影响'],
+          ['非方阵与三种尾块', '非方阵形状与尾块处理'],
+          ['HIP 与 Triton 的分块层次对照', '两条路线的分块层次对照'],
+          ['tile 形状怎么选', '访存受限 shape 的配置选择规则'],
+          ['运行、输出与 Profiling', '运行输出与 profiling 入口'],
+          ['练习', '练习与验收'],
         ]
       },
       {
@@ -210,15 +220,16 @@ export const parts = [
         status: '✅',
         lead: '本章把前四章的模式组合起来：矩阵乘产生 Scores，Softmax 做归一化，再与 V 相乘。公共部分先比较物化与在线数据流；HIP/Triton 两条路线分别实现教学版前向 Attention，并已完成三进程正式测量与逐实现 trace。',
         sections: [
-          ['从普通 Attention 数据流开始', '只补本章需要的 Q/K/V、Scores、Softmax 与输出。'],
-          ['物化中间矩阵的代价', '画出三段 kernel 与 Scores/P 的全局读写路径。'],
-          ['在线 Softmax 怎样保持精确', '手算 running max、normalizer、历史重缩放与输出累加。'],
-          ['固定语义、边界与测量口径', '先用单 batch、单 head、FP32 前向固定数学语义、尾块和完整时间，再把 causal 与低精度留作练习。'],
-          ['HIP materialized：三段式基线', '显式写出 Scores/Probability，再与在线版本共享语义和 reference。'],
-          ['HIP online：教学化在线融合', '消除完整中间矩阵，同时暴露频繁同步带来的负结果。'],
-          ['Triton t0/t1：在线 query/key tile', '保持相同算法，只对 key tile 与 warps 做受控配置对照。'],
-          ['完整证据与实现边界', '汇总时间、分配字节、dispatch、正确性与资源字段。'],
-          ['从组合到融合的方法总结', '回收 Element-Wise、Reduction、Normalization 与 GEMM-Like。']
+          ['先固定 Attention 的语义', 'attention 的数学语义与记号'],
+          ['物化版本的数据流', '物化中间矩阵的代价'],
+          ['在线 Softmax 的四个状态', 'running max/sum 的四个状态'],
+          ['HIP materialized：三段式基线', '物化三 kernel 基线'],
+          ['HIP online：一行一个 block', '在线融合的单 kernel 实现'],
+          ['Triton：一个 program 处理一行', 'Triton 的行映射实现'],
+          ['正确性矩阵', '正确性验证矩阵'],
+          ['计时和 Profiling 看什么', '计时口径与 profiling 信号'],
+          ['HIP 与 Triton 的层次对照', '两条路线的对照'],
+          ['练习：逐步接近真实 Attention', '练习与延伸方向'],
         ]
       },
       {
@@ -227,14 +238,17 @@ export const parts = [
         status: '✅',
         lead: '本章是 Part 2 的综合终章：不再引入新的优化名词，而是用 Fused RMSNorm 把逐元素、归约、融合、正确性、benchmark 与 profiling 串成一次独立完成的优化记录。HIP/Triton、边界正确性、三进程测量与逐实现 trace 已完成。',
         sections: [
-          ['从 LayerNorm 到 RMSNorm', '从公式和数据流解释 RMSNorm 保留了什么、移除了什么，以及它为什么适合作为综合题。'],
-          ['固定数学语义、误差和目标 Shape', '先锁定 dtype、归约轴、epsilon、参考实现、误差标准和目标输入，再讨论优化。'],
-          ['HIP：从分步 Baseline 到融合实现', '先建立分步正确版本，再逐次验证归约、数据驻留与融合边界。'],
-          ['Triton：一行一个 Program', '用一个 program 覆盖一行，受控实验 block size、num warps 与长行边界。'],
-          ['正确性、Benchmark 与 Profiling', '用统一矩阵、kernel-only 口径和可追溯证据比较各版本。'],
-          ['独立优化记录与失败回退', '保留每轮假设、单变量改动、负结果和回退点，形成可复跑报告。'],
-          ['从 RMSNorm 迁移到新题目', '把逐元素、归约和融合模式迁移到新的算子规格，而不是背最终代码。'],
-          ['拓展练习：LeetGPU 与其他平台', '平台题目、运行环境与评分口径单独核对，平台成绩不替代本地实验。']
+          ['从 LayerNorm 到 RMSNorm', 'RMSNorm 的数学语义与为什么省略均值'],
+          ['先锁定实验契约', '固定语义、误差与目标 shape'],
+          ['HIP serial：最短正确基线', '最短正确基线'],
+          ['HIP block：协作归约并融合写回', '块内协作归约与融合写回'],
+          ['Triton：一行一个 program', 'Triton 的行映射实现'],
+          ['融合到底省掉了什么', '融合省掉的 dispatch 与中间读写'],
+          ['一次完整的运行与检查', '完整运行与 evidence 检查'],
+          ['Profiling 与单变量实验', 'profiling 信号与单变量实验'],
+          ['HIP 与 Triton 对照', '两条路线的对照'],
+          ['独立优化记录模板', '可复用的优化记录模板'],
+          ['迁移到新题目', '从 RMSNorm 迁移到新题目的方法'],
         ]
       }
     ]
@@ -398,7 +412,6 @@ export const appendices = [
 export const chapters = numberedChapters()
 export const chapterCount = chapters.length
 export const appendixCount = appendices.length
-export const bodyPartCount = parts.length - 1
 
 export const navItems = [
   { text: '首页', link: '/' },
