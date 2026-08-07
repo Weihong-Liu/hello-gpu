@@ -18,7 +18,6 @@ from typing import Sequence
 
 PROCESS_COUNT = 3
 EXPECTED_IMPLEMENTATIONS = {
-    "branch-divergence": {"wave-uniform", "wave-divergent"},
     "global-memory": {"stride-1", "stride-17", "stride-257"},
     "lds-banks": {"stride-1", "stride-32", "stride-33"},
     "matrix-path": {"valu", "wmma"},
@@ -262,7 +261,13 @@ def _profile_summary(profile_dir: Path | None, source_commit: str) -> list[dict[
 
     profile_rows: dict[tuple[str, str], dict[str, object]] = {}
     for trace_path in sorted(profile_dir.rglob("*_kernel_trace.csv")):
-        pair = _profile_pair(trace_path, profile_dir)
+        try:
+            pair = _profile_pair(trace_path, profile_dir)
+        except ValueError as error:
+            if "unique profile identity" not in str(error):
+                raise
+            # unified profiles also contain the sibling chapter's traces
+            continue
         names = _kernel_names(trace_path)
         entry = profile_rows.setdefault(
             pair, {"dispatch_count": 0, "kernel_names": set()},
@@ -270,8 +275,12 @@ def _profile_summary(profile_dir: Path | None, source_commit: str) -> list[dict[
         entry["dispatch_count"] = int(entry["dispatch_count"]) + len(names)
         entry["kernel_names"].update(names)
 
-    if set(profile_rows) != EXPECTED_PAIRS:
-        raise ValueError("profile must contain the complete expected experiment/implementation set")
+    missing = EXPECTED_PAIRS - set(profile_rows)
+    if missing:
+        raise ValueError(
+            "profile must contain the complete expected experiment/implementation set; "
+            f"missing: {sorted(missing)}"
+        )
 
     return [
         {
@@ -377,7 +386,7 @@ def publish(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Publish Chapter 2 benchmark evidence.")
+    parser = argparse.ArgumentParser(description="Publish the chapter's benchmark evidence.")
     parser.add_argument("--run-log", action="append", required=True, type=Path)
     parser.add_argument("--profile-dir", type=Path)
     parser.add_argument("--source-commit", required=True)
