@@ -39,3 +39,6 @@ notebooks/*
 
 # 杂散的重复目录，不进仓库
 code/part3-agent 2/
+
+# 内部 Agent 计划，勿提交
+docs/superpowers/
