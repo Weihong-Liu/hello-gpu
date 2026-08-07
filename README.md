@@ -69,7 +69,7 @@ https://datawhalechina.github.io/hello-gpu/
 | [第 17 章 多轮优化实战](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part3-agent/chapter17/index.md) | Agent 把 naive kernel 优化 3-5x、失败回退、对比报告 | 🚧 |
 | **第 4 篇：真实模型 + Agent** | | |
 | [第 18 章 YOLO 部署 + Agent 自动优化](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part4-models-agent/chapter18/index.md) | ONNX/MIGraphX 部署、Agent profiling 找瓶颈、改配置/算子、对比 | 🚧 |
-| [第 19 章 小模型 LLM 解码 + Agent 自动优化](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part4-models-agent/chapter19/index.md) | Qwen 0.5B/1.8B 量化、decode 算子视角、Agent 优化 KV cache/精度 | 🚧 |
+| [第 19 章 小模型 LLM 解码 + Agent 自动优化](https://github.com/datawhalechina/hello-gpu/blob/main/docs/part4-models-agent/chapter19/index.md) | LFM2.5-8B-A1B 量化（GGUF）、decode 算子视角、Agent 优化 KV cache/精度 | 🚧 |
 
 ## 贡献者名单
 

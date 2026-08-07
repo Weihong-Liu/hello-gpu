@@ -326,17 +326,17 @@ export const parts = [
       },
       {
         title: '小模型 LLM 解码 + Agent 自动优化',
-        summary: 'Qwen 0.5B/1.8B 量化、decode 算子视角、Agent 优化 KV cache/精度',
+        summary: 'LFM2.5-8B-A1B 量化（GGUF）、decode 算子视角、Agent 优化 KV cache/精度',
         status: '🚧',
-        lead: '本章把 Agent 应用到 LLM 解码场景。受 9070XT 16GB 显存限制，只能量化小模型（Qwen 0.5B/1.8B）。重点是 decode 阶段的算子视角：Agent 如何优化 KV cache 访问、精度选择等。注意：PagedAttention、多卡 TP 等留给 hello-mlsys。',
+        lead: '本章把 Agent 应用到 LLM 解码场景。受书基线 16GB 显存限制，选型 MoE 小模型 LFM2.5-8B-A1B（A1B：每 token 只激活 1 个专家）的 GGUF 量化版本（Q4_K_M，4.79 GiB），用 llama.cpp ROCm 后端实测。decode 基线、RPB/nwarps 扫描与 Q4 vs Q8 精度对比均来自真实实验（RX 7900 XTX，数字以标注平台为准）。PagedAttention、多卡 TP 等留给 hello-mlsys。',
         sections: [
-          ['显存约束下的模型选型', '说明 9070XT 16GB 显存为什么选 Qwen 0.5B/1.8B 量化，跑不了 7B+。'],
+          ['显存约束下的模型选型', '16GB 显存与 AMD 量化生态决定选型：fp16 8B 放不下，选 MoE A1B + GGUF 量化（4.79 GiB 全驻留）；vLLM 量化路径在 RDNA3 消费卡上几乎全灭，走 llama.cpp。'],
           ['LLM 推理流程拆解', '拆解 prefill 和 decode 两个阶段，理解 decode 为什么是算子密集型。'],
-          ['建立 decode baseline', '测量 TTFT、TPOT、KV cache 显存占用作为 baseline。'],
-          ['decode 的算子视角', '把 decode 拆成 attention（KV cache 读取）+ matmul（投影）两个核心算子。'],
-          ['Agent 优化 KV cache 访问', '让 Agent 分析 KV cache 的访存模式，给出精度/布局优化建议。'],
-          ['Agent 优化精度选择', '让 Agent 对比 fp16/int8/int4 在 decode 性能和显存上的权衡。'],
-          ['单卡边界与下一步', '明确 PagedAttention、多卡 TP、并发调度等留给 hello-mlsys。']
+          ['建立 decode baseline', '用固定生成长度、重复多次的方式测量 TPOT，建立可归因的 decode 基线。'],
+          ['decode 的算子视角', '把 decode 拆成 attention（KV cache 读取）+ matmul（投影）两个核心算子，推导吞吐上限并与实测对照。'],
+          ['Agent 优化 KV cache 访问', 'KV cache 访存模式与 decode 固定开销；KV 优化杠杆是结构改变而非配置搜索，完整轨迹见第 17 章。'],
+          ['Agent 优化精度选择', 'Q4_K_M vs Q8_0 真实扫描：默认配置 Q4 快 11%，统一 nw=1 后 Q8 反超 34%（与 NVIDIA 相反）——精度 × 调度是组合实验，微基准不可外推。'],
+          ['单卡边界与下一步', '显存/生态/计算三重边界：FP8 路径在消费卡不可用；PagedAttention、多卡 TP、并发调度留给 hello-mlsys。']
         ]
       }
     ]
