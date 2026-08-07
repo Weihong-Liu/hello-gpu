@@ -1,4 +1,4 @@
-# Chapter 7 Vector Add Experiment
+# Chapter 8 Vector Add Experiment
 
 ## Scope
 
