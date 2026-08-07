@@ -732,4 +732,3 @@ output[i] = max(input_a[i] + input_b[i], 0)
 - [Triton 官方调试文档](https://triton-lang.org/main/programming-guide/chapter-3/debugging.html)：CPU interpreter 与 Triton-viz 的定位。
 - [Triton-viz 官方仓库](https://github.com/Deep-Learning-Profiling-Tools/triton-viz)：trace、可视化、profiler 与 sanitizer 的使用入口。
 - [PyTorch HIP 语义](https://docs.pytorch.org/docs/stable/notes/hip.html)：为什么 ROCm 构建继续使用 `torch.cuda` 接口名。
-- [DLog Element-Wise 教程](https://dlog.com.cn/posts/cuda05/element_wise)：本文只借鉴“先画数据移动、再进入代码”的教学节奏，图与实验均按 AMD/ROCm 语境重新制作。
