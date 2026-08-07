@@ -9,7 +9,7 @@ description: "Hello GPU 第2章 · grid/workgroup/wavefront/lane 的工作划分
 
 > 第 1 章我们确认了环境是通的——ROCm 看得到 GPU、PyTorch 用得上 GPU、最小 HIP 程序能编译运行，环境这张地图已经在你手上。现在该铺开第二张地图了：**GPU 体系结构**。本章会做三件事：跟着一次真实的 kernel 提交（`hipLaunchKernelGGL`）看清线程怎么被划分（grid → workgroup → wavefront → lane）、搞清楚这些波前落到哪块硬件上执行（WGP/CU/SIMD）、再用 EXEC 掩码弄懂分支发散为什么会让一整排线程被拖住。
 >
-> 这套「软件怎么划分、硬件怎么执行」的两层视角，是后面一切优化的心智地基：下一章会接着讲片上资源和内存层级；Part 2 的每个算子优化——合并访存（[第 8 章 Element-Wise](../../part2-kernels/chapter8/index.md)）、跨线程归约（[第 9 章 Reduction](../../part2-kernels/chapter9/index.md)）、分块与寄存器累加（[第 11 章 GEMM-Like(../../part2-kernels/chapter11/index.md)）、矩阵指令与融合（[第 12 章 Fusion：融合算子](../../part2-kernels/chapter12/index.md)）——都建立在它之上。本章只负责把模型立起来，具体怎么优化，留到对应算子章。
+> 这套「软件怎么划分、硬件怎么执行」的两层视角，是后面一切优化的心智地基：下一章会接着讲片上资源和内存层级；Part 2 的每个算子优化——合并访存（[第 8 章 Element-Wise](../../part2-kernels/chapter8/index.md)）、跨线程归约（[第 9 章 Reduction](../../part2-kernels/chapter9/index.md)）、分块与寄存器累加（[第 11 章 GEMM-Like](../../part2-kernels/chapter11/index.md)）、矩阵指令与融合（[第 12 章 Fusion：融合算子](../../part2-kernels/chapter12/index.md)）——都建立在它之上。本章只负责把模型立起来，具体怎么优化，留到对应算子章。
 
 本章对应代码在：
 
@@ -245,7 +245,9 @@ hipcc --offload-arch=gfx1201 -O3 -std=c++17 branch_divergence.hip -o branch_dive
 | 实现 | 中位数时间（ms） | 吞吐（TFLOPS） | 相对差距 |
 | --- | ---: | ---: | ---: |
 | `wavefront-uniform` | 0.237341 [0.237041, 0.239320] | 0.565507 | 基线 |
-| `wavefront-divergent` | 0.245241 [0.243860, 0.246920] | 0.547289 | +3.33% |在真实算子里，分支发散要不要紧、怎么排布数据来缓解，会结合具体场景在 Part 2 反复出现——比如 [第 9 章 Reduction](../../part2-kernels/chapter9/index.md) 里归约树的 lane 参与模式。
+| `wavefront-divergent` | 0.245241 [0.243860, 0.246920] | 0.547289 | +3.33% |
+
+在真实算子里，分支发散要不要紧、怎么排布数据来缓解，会结合具体场景在 Part 2 反复出现——比如 [第 9 章 Reduction](../../part2-kernels/chapter9/index.md) 里归约树的 lane 参与模式。
 
 **迁移范围：** EXEC 这套掩码执行的模型，来自 LLVM AMDGPU 文档，是通用的；但上面那个约 3% 只属于那套受控组合，**不能**拿去当别的 kernel 的预算。
 

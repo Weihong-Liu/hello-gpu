@@ -200,7 +200,7 @@ prefill 的结论也不同：Q4 7022 t/s vs Q8 3088 t/s——**Q4 在 prefill �
 
 ## 延伸阅读
 
-- llama.cpp ROCm 构建与 GGUF 量化格式（见附录 A 环境章节）
+- llama.cpp ROCm 构建与 GGUF 量化格式（官方 README 的 ROCm 构建说明与 GGUF 文档）
 - [第 17 章 多轮优化实战](../../part3-agent/chapter17/index.md) — FA Decode 的 M=1 注意力优化轨迹，decode 的另一半算子
 - [第 11.12 节 tile 形状怎么选](../../part2-kernels/chapter11/index.md) — 访存受限 shape 的配置选择规则
 - llama.cpp `llama-bench` 工具与 `LLAMA_MMVQ_NWARPS` / `LLAMA_MMVQ_RPB` 环境变量——本章 RPB/nwarps 扫描所用的实验协议

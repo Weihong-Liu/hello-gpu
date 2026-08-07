@@ -92,7 +92,7 @@ triton/
 
 ```toml
 [project]
-name = "part0-preface"
+name = "part0-intro"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [

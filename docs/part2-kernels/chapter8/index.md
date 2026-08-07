@@ -21,9 +21,9 @@ import ElementwiseJourney from './elementwise-journey.vue'
 
 | 阅读路线 | 更适合谁 | 建议顺序 | 能带走什么 |
 | ---- | ---- | ---- | ---- |
-| 完整路线 | 第一次系统学习 GPU Kernel，希望理解两种写法 | 7.1 → 7.2 → 7.3 → 7.4 → 7.5 → 7.6 → 7.7 → 7.8 → 7.9 | 同一个算子从数学语义到实验闭环的全貌 |
-| [HIP 路线](#_7-4-hip-从标量线程到受控访存实验) | 想看清 thread、wavefront、显存地址与向量加载，愿意写 C++ | 7.1 → 7.2 → 7.3 → 7.4 → 7.6 → 7.8 → 7.9 | 更强的底层控制与性能分析入口 |
-| [Triton 路线](#_7-5-triton-从最小-tile-到参数实验) | 熟悉 Python/PyTorch，想先快速写出可验证的自定义算子 | 7.1 → 7.2 → 7.3 → 7.5 → 7.6 → 7.8 → 7.9 | program/tile/mask 的最小心智模型 |
+| 完整路线 | 第一次系统学习 GPU Kernel，希望理解两种写法 | 8.1 → 8.2 → 8.3 → 8.4 → 8.5 → 8.6 → 8.7 → 8.8 → 8.9 | 同一个算子从数学语义到实验闭环的全貌 |
+| [HIP 路线](#_8-4-hip-从标量线程到受控访存实验) | 想看清 thread、wavefront、显存地址与向量加载，愿意写 C++ | 8.1 → 8.2 → 8.3 → 8.4 → 8.6 → 8.8 → 8.9 | 更强的底层控制与性能分析入口 |
+| [Triton 路线](#_8-5-triton-从最小-tile-到参数实验) | 熟悉 Python/PyTorch，想先快速写出可验证的自定义算子 | 8.1 → 8.2 → 8.3 → 8.5 → 8.6 → 8.8 → 8.9 | program/tile/mask 的最小心智模型 |
 
 ::: tip 先记住一句话
 HIP 常从“当前 thread 得到哪个标量下标”出发；Triton 常从“当前 program 生成哪一块下标”出发。两者最后都必须回答同一件事：**读了哪些地址，算了什么，写回哪里。**
@@ -118,7 +118,7 @@ HIP：    当前 thread → 标量 index   → 标量 load / add / store
 Triton： 当前 program → 一块 offsets → 分块 load / add / store
 ```
 
-两条路线改变的是源码直接控制的层次，不是 Vector Add 的数学语义。它们都要覆盖相同的有效下标，也都要经过正确性检查与实测，不能因为抽象层次更高或更低就预设谁更快。真实的 HIP API 留到 [7.4](#_7-4-hip-从标量线程到受控访存实验)，Triton 最小模板留到 [7.5](#_7-5-triton-从最小-tile-到参数实验) 再逐行展开。
+两条路线改变的是源码直接控制的层次，不是 Vector Add 的数学语义。它们都要覆盖相同的有效下标，也都要经过正确性检查与实测，不能因为抽象层次更高或更低就预设谁更快。真实的 HIP API 留到 [8.4](#_8-4-hip-从标量线程到受控访存实验)，Triton 最小模板留到 [8.5](#_8-5-triton-从最小-tile-到参数实验) 再逐行展开。
 
 ### 8.1.3 什么不属于这一类
 
@@ -391,7 +391,7 @@ for (std::size_t i = vector_count * 4 + thread;
 
 ### 8.4.6 HIP 路线当前能下什么结论
 
-HIP ladder 已经把三个问题拆开：v1 只控制同一轮的地址顺序，v2 改变 grid 与每线程工作方式，v3 再引入源码向量类型和尾部路径。单看代码不能给它们排快慢；统一的正确性、benchmark 和 trace 数据放在 [7.6](#_7-6-正确性、benchmark-与-profiling)，负结果与边界在 [7.8](#_7-8-负结果、适用边界与下一步) 汇总。
+HIP ladder 已经把三个问题拆开：v1 只控制同一轮的地址顺序，v2 改变 grid 与每线程工作方式，v3 再引入源码向量类型和尾部路径。单看代码不能给它们排快慢；统一的正确性、benchmark 和 trace 数据放在 [8.6](#_8-6-正确性、benchmark-与-profiling)，负结果与边界在 [8.8](#_8-8-负结果、适用边界与下一步) 汇总。
 
 完整实现位于 `code/part2-kernels/chapter8/vector_add_hip.hip`。
 
@@ -508,7 +508,7 @@ python chapter8/visualize_triton.py --size 13 --block 8 --launch
 
 ### 8.5.6 Triton 路线当前结果
 
-Triton ladder 只把 `BLOCK_SIZE` 从 256 改为 1024，并保持 `num_warps=4`。更大的 tile 同时减少 program 数并改变资源需求，所以仍要把时间范围和 trace 放在一起读。统一结果见 [7.6](#_7-6-正确性、benchmark-与-profiling)，不能只看到 program 数减少就提前宣布胜负。
+Triton ladder 只把 `BLOCK_SIZE` 从 256 改为 1024，并保持 `num_warps=4`。更大的 tile 同时减少 program 数并改变资源需求，所以仍要把时间范围和 trace 放在一起读。统一结果见 [8.6](#_8-6-正确性、benchmark-与-profiling)，不能只看到 program 数减少就提前宣布胜负。
 
 完整实现位于 `code/part2-kernels/chapter8/vector_add_triton.py`；可视化入口位于 `code/part2-kernels/chapter8/visualize_triton.py`。
 
