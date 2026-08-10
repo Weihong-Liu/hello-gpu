@@ -1,182 +1,232 @@
 ---
 title: "第17章 多轮优化实战"
-description: "Hello GPU 第17章 · Agent 把 naive kernel 优化 3-5x、失败回退、对比报告"
+description: "Hello GPU 第17章 · vector_add 真实轨迹 ≈2.19×、失败回退、对比报告"
 ---
 
 # 第17章 多轮优化实战
 
 ## 本章目标、前置知识与产物
 
-> 本章是 Agent 算子层篇的高潮：让 Agent 对一个 naive kernel 跑完整的多轮优化，观察它如何从慢版本一步步优化到 3-5 倍。重点是看 Agent 的行为轨迹，以及失败时如何回退。
+本章是算子 Agent 篇的高潮：把第 15 章的工具与第 16 章的循环放在一起，跑一次完整多轮优化，然后——**如实展示结果**。
 
-前面两章我们搭好了工具（第 15 章）、设计了循环（第 16 章）。本章把这些放在一起跑一次完整的多轮优化，然后——**如实展示结果**。
+本章主角是 **`vector_add` fixtures**，硬件为 **Radeon 8060S（`gfx1151`）+ ROCm 7.12**，工作区 `task-20260806-144647`。
 
-先说结论，这也是本书和「Agent 自动优化一切」类教程最大的区别：在这次真实实验里，**纯 Agent 自动优化对性能的贡献接近 0%**（15 次 API 调用只有 1 次通过编译和正确性，且无性能提升）；而同一个任务在「人 + 工具 + Agent」的协作流程里做到了 2.87x 到 5.26x。真正有价值的教训是：**Agent 是优秀的记录者和执行者，但目前还不是发现者**——关键优化洞察（split-KV、寄存器分块）全部来自人。
+先说结论，这也是本书和「Agent 自动优化一切」类教程的区别：
 
-本章带你复盘两条完整的优化轨迹，一条成功（FA Decode：N=2048 的 4.17x 到 N=8192 的 5.26x），一条对照（fused MLP 人工 2.87x vs Agent 0%），最后看看一份好的优化报告长什么样。
+- 在**故意留头寸**的朴素 `vector_add` 上，本轮 Agent 搜索把延迟从约 **0.705 ms → 0.322 ms（≈2.19×）**，10 轮评估中 **5 次接受**；
+- 加速主要来自 **更大 `block_size` + 更高 `num_warps`**（减 grid 启动、提高并行度），符合 memory-bound 直觉；
+- 教程承诺的「3–5×」针对**有明显优化空间**的算子（融合 softmax、naive reduction/matmul 等）。`vector_add` 靠近带宽墙，用来证明**闭环可信**与**失败回退**，不是证明极限加速。
 
-::: warning 平台说明
-本章实验记录跨两个平台：FA Decode / Paged Attention 在 RTX 3080（SM86，Triton）；fused MLP 在 RX 7900 XTX（gfx1100，HIP）。方法与结论与硬件无关，数字请以原文标注平台为准；书基线 RX 9070 XT 上可用同样流程复测。
-:::
+学完本章，你应该能够：
+
+- 按留痕规则读懂 `trajectory.jsonl`；
+- 从性能曲线指出哪几轮提升最大、哪几轮该回退；
+- 写一份区分事实与假设的对比报告。
+
+对应代码与产物：
+
+```text
+code/part3-agent/chapter15/
+├── fixtures/vector_add/
+│   ├── baseline.py
+│   ├── reference.py
+│   └── task.json
+└── logs/tasks/task-20260806-144647/   # 本章引用的真实工作区
+    ├── trajectory.jsonl
+    ├── best.py
+    ├── hardware.json
+    └── viz/
+
+code/part3-agent/chapter16/
+├── run_part3_test.py
+├── visualize_trajectory.py
+└── run_and_visualize.sh
+```
 
 ## 17.1 选一个教学算子
 
-好的教学算子有三个条件：**优化空间大**（能从 naive 到 5x）、**语义简单**（几行能说清）、**贴近真实**（生产里真的有人写）。FA Decode 三个都满足。
+| 算子 | 用途 | 预期 |
+|---|---|---|
+| **vector_add**（本章默认） | 验证 Agent 闭环、评测器、非交互入口 | 中小幅到约 2×（视 baseline 有多朴素）；重在轨迹完整 |
+| masked-softmax / reduction / naive matmul | 冲击 3–5× 叙事 | 融合、LDS、向量化等机制有头寸 |
 
-FA Decode 是「单 token 流式注意力」：Q 只有一行（M=1），K/V 是完整的 KV cache（N 行），计算
+选型原则：
 
-$$
-O = \text{softmax}(Q K^T / \sqrt{D})\, V
-$$
+1. 有可执行的 Triton baseline 与 PyTorch reference；
+2. `costModel` 能区分 bound 类型；
+3. 故意留一点「可改空间」（如偏小 `block_size`），否则 Agent 只能在噪声里打转。
 
-naive PyTorch 版本用 `einsum` 直接算，会物化 N×N 的注意力矩阵；FA Decode 的目标就是**不物化它**，用 online softmax 流式累加。任务契约（第 15 章格式）：
+本章任务契约摘要：
 
 | 字段 | 内容 |
 |---|---|
-| Objective | 单 token 流式 attention，不物化 N×N 矩阵 |
-| Correctness | 与 `torch.einsum` 参考比较，atol=1e-2 |
-| Performance | N=2048 ≥3.0x；N=4096 ≥4.0x；N=8192 ≥5.0x |
-| Constraints | Triton 3.x，必须用 online softmax |
-
-为什么这个算子适合教学？因为它的瓶颈分布很典型：**M=1 意味着并行度天然不足**（一个 head 只有一行 query），想提速必须想办法把 GPU 填满——这是 decode 阶段所有注意力 kernel 的共同难题。第 19 章还会回到这个算子。
+| Objective | 元素级向量加，与 reference 一致 |
+| Shape / dtype | `4096×2048`，fp16，约 8.4M 元素 |
+| Correctness | 与 PyTorch reference 比对 |
+| Promotion | 配对中位改进 ≥ 1%，多数配对为正 |
+| Constraints | Triton on ROCm |
 
 ## 17.2 记录每轮优化的轨迹
 
-优化之前先定「留痕规则」。KDA 工作流的做法是在任务工作区里固定几个文件，每个文件一种证据：
+优化之前先定「留痕规则」。工作区固定若干证据文件：
 
 ```text
-task-workspace-fa-decode/
-├── docs/
-│   ├── task-contract.md    # 任务契约（第 16.2 节）
-│   ├── draft.md            # 设计草案
-│   ├── plan.md             # 可执行计划
-│   └── agent_run.log       # Agent 每轮调用与反馈流水
-├── src/
-│   └── fa_decode.py        # 各版本 kernel
-├── test_fa_decode.py       # 正确性（atol=1e-2）
-├── bench_fa_decode.py      # 性能（warmup=20, rep=200）
-└── candidates.jsonl        # 候选列表：名字、父版本、状态
+task-20260806-144647/
+├── task.json / reference.py / baseline.py / best.py
+├── hardware.json          # measure_peak 副本
+├── trajectory.jsonl       # 每行一轮：change / status / accepted / latencyMs / …
+├── run_summary.json
+└── viz/                   # 可视化 PNG
 ```
 
-规则只有一条：**任何候选版本，无论成败，都留下记录**。失败的记录格式和成功一样——版本名、改动、benchmark 结果、失败原因。因为一个被记录下来的失败，比一次没有证据的成功更能指导下一轮。
+规则只有一条：**任何候选版本，无论成败，都留下记录。**
 
-真实的 `agent_run.log` 里，每一轮是这样的：
+本轮 Agent 步内工具序列（历史跑次工具名曾为 `evaluate_candidate` / `profile`；**当前代码**请用三件套 + `accept_candidate`）：
 
-```text
-Round 7: Agent 建议把 BLOCK_N 从 64 改到 128，num_warps 从 4 改到 2
-  → 编译通过 → 正确性通过 → 3.4x（从 1.83x 提升）→ 接受
-Round 12: Agent 建议用 tl.dot 替换逐元素 QK^T
-  → 编译通过 → 正确性通过 → 71.23 μs vs 上一版 66 μs → 拒绝，记录原因
-```
+| Agent 步 | 当时工具 | 现今对应 | 关键返回 |
+|---|---|---|---|
+| 1 | `get_environment` | 同左 | Radeon 8060S / gfx1151 / ROCm 7.12 |
+| 1 | `measure_peak` | 同左 | 带宽 **210.5 GB/s**；fp16 **27.8 TFLOPS** |
+| 2 | `profile` | `profile_kernel` | AI≈**0.167** → **memory-bound** |
+| 3–12 | `evaluate_candidate` ×10 | `compile`+`bench`+`accept` | **5 接受 / 5 拒绝** |
 
 ## 17.3 观察性能提升曲线
 
-FA Decode 的完整轨迹只有四步，每一步一个明确假设（比例均为 N=8192 口径；N=2048/4096 的最终结果见下表）：
+硬件与算子画像（优化前）：
 
-| 版本 | 改动 | 结果 | 假设 |
+| 指标 | 数值 |
+|---|---|
+| 设备 | Radeon 8060S Graphics · `gfx1151` |
+| ROCm / torch | 7.12 / `2.10.0+rocm7.12.0` |
+| 带宽峰值 | 210.5 GB/s |
+| AI / bound | 0.167 · memory-bound |
+| Baseline 特征 | `block_size=256`，未设 `num_warps` |
+| Baseline 中位延迟（反推） | ≈ **0.705 ms** |
+
+逐轮账本（`improvementFraction` 相对**当时 incumbent**，不是相对最初 baseline）：
+
+| 轮 | 改动 | 延迟 (ms) | 相对 incumbent | 裁决 |
+|---|---|---|---|---|
+| 1 | `block_size` 256→1024 | 0.378 | **+46.34%** | ✓ 接受 |
+| 2 | + `num_stages=2` | 0.372 | -0.32% | ✗ 阈值下 |
+| 3 | `block_size`→2048 | 0.342 | -1.01% | ✗ |
+| 4 | `block_size`→4096 | 0.338 | **+4.64%** | ✓ 接受 |
+| 5 | `block_size`→8192 | 0.405 | -17.34% | ✗ 明显变慢 |
+| 6 | 4096 + `num_stages=2` | 0.340 | +0.34% | ✗ &lt;1% |
+| 7 | 4096 + `num_warps=8` | 0.329 | **+3.46%** | ✓ 接受 |
+| 8 | `num_warps=16` | 0.326 | **+1.24%** | ✓ 接受 |
+| 9 | `num_warps=32` | **0.322** | **+1.50%** | ✓ 接受（最终 best） |
+| 10 | + `num_stages=2` | 0.323 | +0.50% | ✗ &lt;1% |
+
+相对最初 baseline：
+
+| 指标 | Baseline | Best（R9） | 变化 |
 |---|---|---|---|
-| v0 baseline | 每 head 一个 block，grid=32 | 1.83x | 先跑通 |
-| v1 | BLOCK_N=128, num_warps=2 | 3.4x | 大 block + 少 warps 减少同步开销 |
-| v2 | 合并 K/V 加载 | 4.35x | 减少 FP32 转换与重复加载 |
-| v3 | split-KV（num_splits=4） | 5.26x | 填充 SM，提高并行度 |
+| 中位延迟 | ≈ 0.705 ms | **0.322 ms** | **≈2.19×**（延迟降约 54%） |
+| `block_size` | 256 | **4096** | grid 启动次数约减 16× |
+| `num_warps` | 默认 | **32** | 提高 CU 占用与并行度 |
 
-三个 N（2048/4096/8192）的最终结果：
+曲线形状：
 
-| N | naive (ms) | FA (ms) | 加速比 | 目标 | 状态 |
-|---|---|---|---|---|---|
-| 2048 | 0.274 | 0.066 | 4.17x | 3.0x | PASS |
-| 4096 | 0.522 | 0.102 | 5.13x | 4.0x | PASS |
-| 8192 | 1.020 | 0.194 | 5.26x | 5.0x | PASS |
+- **最大单轮收益**来自 R1 放大 `block_size`（配置搜索，减启动开销）；
+- R7–R9 的 `num_warps` 阶梯是二次提升；
+- R5 `block_size=8192` 是结构/资源边界上的负结果——过大 block 伤害占用或调度。
 
-哪一步提升最大？**v3 的 split-KV**——从 4.35x 到 5.26x 只是最后一推，但它解决了全程最关键的问题：grid=32 只填了 GPU 一半的 SM（68 个 SM 里只有约 47% 占用）。split-KV 把 N 维切成 4 份，grid 变成 H×4=128，每个 block 处理 1/4 的 KV cache，各自产出 partial (m, l, acc)，再用一个轻量归约 kernel 按 online softmax 公式合并。
+### 可视化
 
-理解这条曲线的形状：**1.83x → 3.4x 是配置搜索，4.35x → 5.26x 是结构改变**。配置搜索（block 大小、warps 数）提升有限；结构改变（并行划分）才是数量级来源。这也是为什么 profiling 信号（第 16.5 节）那么重要——如果没有「47% SM 占用」这个信号，Agent 大概率会继续调 BLOCK_N 而不是想 split-KV。
+#### 延迟与配对改进总览
+
+![延迟曲线与配对改进百分比](./images/rounds_overview.png)
+
+上图绿线为 best-so-far latency；下图红虚线为 1% 接受阈值；绿柱接受、橙柱拒绝。R5 大负柱对应 8192 失败试探。
+
+#### 每轮改动时间线
+
+![每轮改动与裁决时间线](./images/process_timeline.png)
+
+#### 状态分布
+
+![接受与拒绝状态分布](./images/status_breakdown.png)
+
+10 轮：**接受 = 5**，**未达阈值 = 5**，本轮无编译失败。
+
+最终 `best.py` 要点：
+
+```python
+block_size = 4096
+_vadd_kernel[grid](..., block_size, num_warps=32)
+```
 
 ## 17.4 失败回退机制
 
-这一轮是本章最有价值的失败。v3 达标后，实验者想验证一个更「优雅」的方向：用 `tl.dot`（张量核）代替逐元素 QK^T 计算——毕竟矩阵乘用张量核是常识。
-
-结果：
+回退不是单独的「undo 工具」，而是评测器契约：
 
 ```text
-v3: 逐元素 QK^T  → 66 μs（N=2048）
-v4: tl.dot 版本  → 71.23 μs（N=2048）← 反而更慢，拒绝
+候选失败或未过阈值 → accepted=false → 不写 best.py → incumbent 保持上一版
 ```
 
-为什么？`tl.dot` 用的是 WMMA 指令，最小 fragment 是 16×16。而这里 M=1：一行 query 会被 padding 成 16 行，**15/16 ≈ 93.75% 的计算量花在填充的虚行上**（16×16 的 MAC 阵列里只有 1 行真正参与计算）。结论：张量核对单 token 解码是负优化。
+本轮最有教学价值的失败是 **R5：`block_size=8192`**——编译与正确性都过，但中位改进 **-17.3%**，明显变慢。Agent 拒绝后继续从 4096 路线搜索 `num_warps`，没有把坏候选写进 best。
 
-这个失败记录的价值在于它给出了一个**可迁移的判断规则**：
+失败记录的价值：
 
-::: tip 失败记录的价值
-「M=1 时别用 tl.dot」这条结论，来自一次失败的实验，却能解释第 19 章 decode 阶段为什么 attention 是访存瓶颈而不是算力瓶颈。失败实验产出的知识，和成功实验一样多。
-:::
+> 「过大 block 在本机 vector_add 上是负优化」这条结论，来自一次失败实验，却能阻止后续盲目把 `block_size` 推到极限。
 
-回退机制的工程实现并不复杂：每轮候选只和当前最优比较，不通过就丢弃、保留上一版，然后**把失败原因写进下一轮的 prompt**（「v4 尝试 tl.dot 失败：M=1 被 padding 成 16 行，93.75% 算力浪费」），避免 Agent 在同一个坑里反复试探。
-
-再看一个「部分成功」的案例：同一系列的 Paged Attention（batch 版 decode）在 B=64 时从 40.2M 做到 150.9M tok/s（3.75x），但小 N（N=2048）只到 1.46x。原因与 FA Decode 不同：Paged Attention 实现把每个 head 的 split-KV 拆成多次 dispatch（每轮约 160 次 launch 的 split/reduce 序列），加上中间缓冲的 HBM 流量，在小题上启动开销盖过了并行度收益——**split-KV 在小题上是负优化**。这个案例教会的是：优化手段的有效性取决于题目的形状，没有银弹。
+Agent 侧配合：把拒绝原因读进下一轮提示；SOP 要求「连续同类失败就换机制」；轨迹保留失败轮次，便于报告诚实引用。
 
 ## 17.5 和人工优化的对比
 
-这一节来自同一实验系列的对照组：fused MLP（`O = SiLU(A×W + bias)`）在 RX 7900 XTX 上，人工优化 vs Agent 自动优化。
-
-人工优化沿「tile 大小 × 寄存器分块」两个维度扫了 11 个变体：
-
-| 变体 | Tile | 寄存器分块 | 512×2048×2048 (us) | 加速比 |
-|---|---|---|---|---|
-| v0 baseline | 16×16 | 1×1 | 904.0 | 1.00x |
-| v1 | 32×32 | 2×2 | 458.5 | 1.97x |
-| v2 | 16×16 + unroll | 1×1 | 895.1 | 1.01x |
-| v3 | 16×16 + 双缓冲 | 1×1 | 924.7 | 0.98x |
-| **v4** | **64×64** | **4×4** | **315.1** | **2.87x** |
-| v5 | 64×64 + vec2 | 4×4 | 384.2 | 2.35x |
-| v6 | 64×64 + 双缓冲 | 4×4 | 315.9 | 2.86x |
-
-关键信息在 v2/v3 的负结果：**手动 unroll 和双缓冲对算力受限（compute-bound）的 kernel 无效甚至更慢**——编译器（-O3）已经做了这些简单优化，人想在这个层面赢过编译器很难。
-
-同一任务上 Agent 跑了 3 轮、15 次 API 调用：
-
-| 轮次 | Agent 尝试 | 结果 |
+| 维度 | 本轮 Agent | 人工典型做法 |
 |---|---|---|
-| Round 1 | `#pragma unroll`、多累加器、vec2 加载 | +0.3%（噪声） |
-| Round 2 | WMMA intrinsics、循环重构 | 编译失败 |
-| Round 3 | 各种「创造性」方案 | 正确性失败 / 编译错误 |
+| 发现方向 | 在 memory-bound SOP 引导下试 block / warps | 一次选定较大 block + 合理 warps |
+| 执行与留痕 | 10 轮全自动评测 + `trajectory.jsonl` | 常靠笔记，易丢负结果 |
+| 最终结果 | ≈2.19× vs 故意朴素 baseline | 熟练者可能更少轮次到达相近点 |
+| 局限 | 未发明新算法结构；步数耗尽即停 | 需要人盯着跑实验 |
 
-结论是诚实的：**Agent 自动优化贡献 ≈ 0%**。它生成的代码能通过编译和正确性的只有 1/15，且没有一次带来性能提升。而真正的性能来源（64×64 tile + 4×4 寄存器分块）是人工实验发现的。
+诚实结论：
 
-这告诉我们什么？
-
-1. **Agent 当前的弱点是「发现」**：寄存器分块这类结构性优化，需要的是对数据复用模式的深度理解，LLM 的推理模式很难自主发现；
-2. **Agent 的价值在「执行 + 记录」**：当人给出方向（比如「试试把 K 循环展开」），Agent 能快速产出变体并自动跑完验证——第 17.2 节的留痕规则让这个过程完全可追溯；
-3. **「3-5x」的正确打开方式是协作**：人负责关键洞察（split-KV、寄存器分块），Agent 负责把每个洞察变成可验证的实验并记录结果。
+1. Agent 当前强项是 **执行 + 记录**：给定方向空间，能快速产出变体并自动验证；
+2. Agent 弱项仍是 **发现全新结构**（线上 fused MLP 对照实验里纯 Agent 贡献接近 0%——见线上第 17.5 节）；
+3. 「3–5×」的正确打开方式往往是 **人给关键洞察，Agent 快速验证并留痕**。本轮 2.19× 发生在「baseline 故意很差」的前提下，不要外推到已经接近带宽墙的生产 kernel。
 
 ## 17.6 生成对比报告
 
-实验结束，把整个轨迹整理成一份报告。好的报告回答五个问题：
+好的报告回答五个问题：
 
-| 问题 | FA Decode 报告的回答 |
+| 问题 | 本轮回答 |
 |---|---|
-| 题目是什么 | task contract 摘要（目标、正确性、约束） |
-| 每轮改了什么 | 版本表：改动 → 结果 → 假设（第 17.3 节） |
-| 哪些失败了、为什么 | v4 tl.dot 失败（WMMA padding）；Paged Attention 小题负优化 |
-| 最终结论 | 4.17x/5.13x/5.26x，三目标全 PASS；最佳版本 + 关键参数 |
-| 哪些数字是事实、哪些是推测 | profiling 数据（69.5% DRAM 利用率）是事实；「还可以更快」是推测 |
+| 题目是什么 | `vector_add` fp16 `4096×2048`；配对改进 ≥1% |
+| 每轮改了什么 | 上表：block_size / num_warps / num_stages |
+| 哪些失败了、为什么 | R5 过大 block；多次 `num_stages` 未过阈值 |
+| 最终结论 | 0.322 ms，≈2.19×；best = 4096 + num_warps=32 |
+| 事实 vs 推测 | 轨迹与 `hardware.json` 是事实；「还能再快」是推测 |
 
-报告必须区分**事实**（benchmark 数字、profiling 数据）与**假设**（「如果换更大的 block 会更快」）。这是 Part 1「可信计时」精神的最终体现：一份没有区分事实与假设的优化报告，无法指导下一个接手的人。
+更细的工具调用链与指标说明见同目录 [optimization-report.md](./optimization-report.md)。
 
-报告留档的位置和实验证据放一起（`experiment-report.md`），这样任何人回来看都能重跑验证。
+### 如何复现
+
+```bash
+cd code/part3-agent
+uv sync && source ./activate-rocm.sh
+
+# 需要 ~/.config/hello-gpu/kernel-agent.env（勿提交 git）
+bash chapter16/run_and_visualize.sh --skip-pytest
+```
+
+前置检查：
+
+```bash
+uv run python -c "import torch; print(torch.cuda.get_device_name(0), torch.__version__)"
+# 本机实测示例：Radeon 8060S Graphics  2.10.0+rocm7.12.0
+```
 
 ## 本章小结
 
-- FA Decode 完整轨迹：1.83x → 3.4x（配置）→ 4.35x（合并加载）→ 5.26x（split-KV），三目标全 PASS。
-- 最大提升来自结构改变（split-KV 填满 SM），不是配置搜索——profiling 信号是找到这个方向的钥匙。
-- 失败实验同样产出知识：M=1 用 `tl.dot` 浪费 93.75% 算力；split-KV 在小 N 上是负优化。
-- 人工 vs Agent 对照实验的诚实结论：纯 Agent 贡献 ≈0%（15 次调用 1 次通过），关键洞察来自人，Agent 是执行者与记录者。
-- 3-5x 的正确路径是「人 + 工具 + Agent」协作：人给方向，Agent 快速验证并留痕。
-- 优化报告五要素：题目、轨迹、失败、结论、事实/假设区分。
+- 实战首先证明闭环可信，再追求 3–5×；算子选型决定加速叙事。
+- 本轮真实结果：10 评 / 5 接受，**0.705→0.322 ms（≈2.19×）**，有效机制是更大 block + 更高 warps。
+- 失败回退由「不更新 best」保证；轨迹 + 可视化是报告账本。
+- Agent 擅长执行与留痕；关键结构洞察仍常需人机协作。
 
 ## 延伸阅读
 
-- [kernel-design-agents (MIT HAN Lab)](https://github.com/mit-han-lab/kernel-design-agents) — KDA 工作流与实验留痕规范
-- [FlashAttention 论文](https://arxiv.org/abs/2205.14135) — online softmax 的原始出处，第 12 章和第 19 章的公共基础
-- [第 12 章 Fusion：融合算子](../../part2-kernels/chapter12/index.md) — 在线 Softmax 的 HIP/Triton 实现细节
-- [第 19 章 小模型 LLM 解码 + Agent 自动优化](../../part4-models-agent/chapter19/index.md) — decode 场景的算子视角，与本章互补
+- [算子优化 Agent 实战报告 · vector_add](./optimization-report.md)
+- `code/part3-agent/chapter14/EXPERIMENT.md`
