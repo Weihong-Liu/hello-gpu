@@ -110,7 +110,7 @@ function readmeDirectory() {
   const lines = [
     '## 目录',
     '',
-    `> 前言 + ${parts.length - 1} 篇正文，共 ${chapters.length} 章。显示章号由 \`docs/.vitepress/outline.mjs\` 自动生成，新增章节后运行 \`npm run docs:sync-outline\` 即可同步 README 与站点导航。`,
+    `> 全书共 ${parts.length} 篇、${chapters.length} 章。显示章号由 \`docs/.vitepress/outline.mjs\` 自动生成，新增章节后运行 \`npm run docs:sync-outline\` 即可同步 README 与站点导航。`,
     '',
     '| 章节名 | 简介 | 状态 |',
     '| ---- | ---- | ---- |',

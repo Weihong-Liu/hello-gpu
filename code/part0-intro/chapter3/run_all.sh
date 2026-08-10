@@ -69,7 +69,8 @@ cleanup() { rm -rf "${BUILD_DIR}"; }
 trap cleanup EXIT
 
 compile() {
-    local source_name="$1" binary_name="$2"
+    local source_name="$1"
+    local binary_name="$2"
     local binary="${BUILD_DIR}/${binary_name}"
     hipcc --offload-arch="${GPU_ARCH}" -O3 -std=c++17 \
         -DCHAPTER2_SOURCE_COMMIT="\"${SOURCE_COMMIT}\"" \
@@ -102,7 +103,9 @@ if [[ "${RUN_EDGE_CASES}" == "1" ]]; then
 fi
 
 run_formal() {
-    local binary="$1" implementation="$2" size="$3"
+    local binary="$1"
+    local implementation="$2"
+    local size="$3"
     "${BUILD_DIR}/${binary}" --implementation "${implementation}" --size "${size}" \
         --warmup "${WARMUP}" --repeat "${REPEAT}" --seed "${SEED}"
 }

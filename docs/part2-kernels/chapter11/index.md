@@ -126,7 +126,7 @@ K 方向分两轮：
 
 每轮加载 4 个 A 元素和 4 个 B 元素，随后这 8 个值共同更新 4 个输出 accumulator。两轮共请求 16 个输入 float；若四个输出各自独立完成长度为 4 的点积，则源码层面会请求 `4 输出 × 4 inner × 2 输入 = 32` 个 float。
 
-对完整 `4×4` 输出，四个输出 tile 一共请求 64 个输入 float，而朴素映射请求 128 个。这个手算说明的是**分块源码能表达的复用上限**，不是“显存流量一定减半”或“性能一定翻倍”。物理事务、cache、同步、occupancy 和指令开销仍要实测。
+对完整 `4×4` 输出，四个输出 tile 一共请求 64 个输入 float，而朴素映射请求 128 个。这个手算说明的是**分块源码能表达的复用上限**，不是“显存流量一定减半”或“性能一定翻倍”。物理事务、cache、同步、占用率 和指令开销仍要实测。
 
 ### 11.3.2 Block 级数据生命周期
 
@@ -232,7 +232,7 @@ LDS 版本减少源码层面的重复 global load，但同时增加：
 - 两组 LDS store 与 load；
 - 每个 K tile 的两次 block 同步；
 - 固定 tile 可能不适合目标 shape；
-- LDS、VGPR 和 block 大小共同影响 occupancy。
+- LDS、VGPR 和 block 大小共同影响 占用率。
 
 因此本章只把 `hip-tiled` 称为“LDS 分块版”，不称为“优化成功版”。是否更快，要看同 shape 的 GPU event 和 `rocprofv3` 结果。
 
@@ -278,7 +278,7 @@ thread -> C[row:row+RM, col:col+RN]
 2. **双缓冲**：在计算当前 LDS tile 时准备下一 tile；需要证明 overlap 确实发生，并计算额外 LDS 占用。
 3. **WMMA**：改变为矩阵指令支持的 dtype/tile；这会同时改变数值精度和计算路径，不能与 FP32 VALU 结果混成一个单变量实验。
 
-第一版代码选 `TILE=16` 只是为了让边界、协作加载和同步容易读懂，不代表它是 9070XT 的最佳配置。
+第一版代码选 `TILE=16` 只是为了让边界、协作加载和同步容易读懂，不代表它是 RX 9070 XT 的最佳配置。
 
 ## 11.8 Triton t0：用 `tl.dot` 表达同一分块
 
@@ -368,9 +368,97 @@ Triton 的输出 mask 只能保护 store，不能代替 K 方向 load mask；HIP
 
 两种语言的抽象层不同，但优化问题相同：哪些输入由哪些输出复用、复用发生在哪一级存储、为复用付出了多少同步和资源成本。
 
-## 11.12 运行、输出与 Profiling
+## 11.12 tile 形状怎么选
 
-### 11.12.1 环境与一键入口
+前几节回答了「分块为什么快」，本节回答「分块怎么选」——BLOCK_M/BLOCK_N/BLOCK_K 和 num_warps 组合成什么形状最好。这是个工程问题，不是一个公式问题。下面的数据来自消费级 GPU 上的一组真实 tile 扫描实验（RDNA3/RDNA3.5/RDNA4 与 NVIDIA 对照，见延伸阅读），平台与书基线不同，但结论的方法可以照搬。
+
+### 11.12.1 为什么不能信任「默认配置」
+
+Triton 的 `autotune` 会在给定配置列表里暴力搜索最优组合。问题有两个：
+
+1. **搜索空间面向数据中心 GPU 设计**。默认配置列表（128×128×64、64×64×64 之类）是为 A100/H100 这类大 LDS、大 wavefront 的芯片调的；消费卡 RDNA3 的 LDS 只有 64KB，很多「默认好配置」直接超出 LDS 上限或占用率过低。
+2. **暴力搜索本身就慢**。每个 shape 都要把全部候选跑一遍（几十次编译 + 跑分），而 LLM 推理的 shape 是动态的（prefill/decode/expert 各不相同），每次都现场搜不现实。
+
+### 11.12.2 tile 敏感性：选错 tile 可能差一个数量级
+
+在 MoE 形状（16×8192×2048，一个小 M、大 N/K 的典型 decode/expert shape）上扫描全部合理 tile，性能差距：
+
+| 平台 | 最优/最差 tile 性能差（spread） |
+|---|---|
+| RX 7900 XTX（RDNA3） | **12.8x** |
+| Radeon 8060S（RDNA3.5） | 2.2x |
+| Radeon AI PRO R9700（RDNA4，≈书基线） | 3.4x |
+| RTX 5060 Ti（Blackwell） | 2.0x |
+| RTX 3080（Ampere） | 1.4x |
+
+两个要点：
+
+- **消费 AMD 卡上 tile 选错的代价比 NVIDIA 大得多**——RDNA3 上最差 tile（128×256×32）只有最优 tile（16×64×32）的 1/12.8 性能。这不是「差 20%」的小事，是「跑不动」和「跑得动」的区别。
+- **最优 tile 本身跨代稳定**：在 `16×8192×2048` 这个 MoE 形状上，`16×64×32` 是 RDNA3/RDNA3.5/RDNA4 三代共同的最优。所以「这个形状该用什么 tile」是有规律可循的，值得把它总结成规则而不是每次穷举（但注意第 11.12.4 节：BLOCK_K 的最优值会随 shape 和平台变，规则不能硬编码）。
+
+### 11.12.3 形状比面积重要
+
+扫描 128×14336×4096（prefill 形状）时的部分结果：
+
+| tile | 面积 (BM×BN) | TFLOPS | 相对最优 |
+|---|---|---|---|
+| **128×64×32 w4** | 8192 | 42.7 | 100% |
+| 128×128×32 w8 | 16384 | 37.5 | 88% |
+| 64×128×32 w4 | 8192 | 30.1 | 70% |
+| 64×64×32 w4 | 4096 | 25.9 | 61% |
+| 16×256×64 w4 | 4096 | 6.7 | 16% |
+
+对照 `128×64` 和 `64×128`：**面积完全相同（8192），性能差 1.42x**。原因在于 BLOCK_M 和实际 M 的关系——M=128 时 BLOCK_M=128 让每个 thread 的寄存器累加器正好吃满一行，而 BLOCK_M=64 需要两轮、每轮都要重新加载 A tile。`16×256` 面积最小却最差：BLOCK_M=16 太小，每 warp 只处理 16 行，访存合并度差。
+
+由此得到一个可操作的启发：**BLOCK_M 尽量对齐实际 M，不要用极端长宽比（aspect ratio > 8 要警惕）**。极端瘦高的 tile（16×256）几乎总是错的。
+
+### 11.12.4 BLOCK_K：跟着 LDS 容量走
+
+BLOCK_K 决定每个 K 步加载进 LDS 的 A/B 切片厚度。它的最优值高度依赖平台与 shape：
+
+| 平台 | LDS | 实测最优 BLOCK_K |
+|---|---|---|
+| RDNA3（7900XTX） | 64KB | 32（MoE 16×8192×2048） |
+| RDNA3.5（8060S） | 64KB | 32（MoE 16×8192×2048） |
+| RDNA4（R9700，gfx1201） | 128 KiB/WGP（单 workgroup 上限 64 KB） | 128（256×256×4096 shape 实测） |
+
+> LDS 容量按 ROCm gpu-specs 表：gfx1201 每 WGP 共 128 KiB，单个 workgroup 可分配的上限为 64 KB——所以「64 KB」和「128 KiB」说的是两件事，本表按每 WGP 容量列出。
+
+RDNA3 上 BLOCK_K=32 占优的原因是：32 是 `half` 类型 64KB LDS 能容纳的「整片 tile 不溢出」的甜点，且 32 的 K 步让加载与计算重叠更顺。RDNA4 在另一个 shape 上最优变成 128——**结论：BLOCK_K 没有全局最优，跟着 LDS 容量和 shape 实测**。早期「100KB smem 所以 BLOCK_K=128」的假设在 Blackwell 上也被实测推翻（8/8 MoE shape 最优仍是 32）。
+
+### 11.12.5 用算术强度分区先判断访存还是算力
+
+选 tile 之前，先算这道题的算术强度，决定优化目标：
+
+$$
+I = \frac{2MNK}{4(MK + NK + MN)}
+$$
+
+- **I < 10（访存受限）**：MoE、decode 这类小 M 形状。tile 的选择要强惩罚低占用率——访存受限的 kernel 需要大量在飞的 load 才能压满带宽。
+- **I ≥ 10（算力受限）**：大 prefill 形状。占用率惩罚降为零，专注 tile 的寄存器复用和 LDS 吞吐。
+
+这个分区直接解释了第 11.2 节的现象：为什么同一个 GEMM 在不同形状下瓶颈完全不同。它也是「硬件先验裁剪」的第一条规则——按算术强度把 shape 分成两类，每类用不同的 tile 选择标准，而不是一套规则打天下。
+
+### 11.12.6 把规则变成推荐器
+
+把这些观察固化下来，就得到一个可复用的 tile 推荐流程：
+
+```text
+输入：M, N, K, dtype, GPU 型号
+1. 硬件先验裁剪：按 tensor core 维度、LDS 容量、寄存器压力、对齐要求
+   剪掉不可行配置（通常能剪掉 95%+ 的搜索空间）
+2. 算术强度分区：I < 10 → 强占用率惩罚；I ≥ 10 → 零占用率惩罚
+3. shape 效率修正：BLOCK_M 贴近 M 加分；极端长宽比惩罚
+4. 输出 Top-K 配置（带预期性能排序）
+```
+
+真实实验里这套规则选出的 Top-1 配置，prefill 达到 cuBLAS 的 93-100%，decode 达 100-121%，MoE expert 超 cuBLAS 105-106%；在 RDNA4 上超 Composable Kernel 27%（18.45 vs 14.52 TFLOPS）。它不保证最优——最优只能靠实测——但它能保证「第一轮就落在合理的配置附近」，把 12.8x 的踩坑空间压缩到一个很小的范围。
+
+这与第 15 章工具封装、第 16 章 Agent 循环的思路完全一致：**把领域知识固化进规则/工具，而不是每次现场搜索**。tile 推荐器就是这类领域工具里最重要的一件。
+
+## 11.13 运行、输出与 Profiling
+
+### 11.13.1 环境与一键入口
 
 在 Radeon RX 9070 XT 实验机上：
 
@@ -419,7 +507,7 @@ min_ms / median_ms / mean_ms / tflops
 
 `tflops` 是按 `2MNK / median_time` 换算的算法性能，不等于硬件指令计数。
 
-### 11.12.2 单独运行 HIP 或 Triton
+### 11.13.2 单独运行 HIP 或 Triton
 
 ```bash
 cd code/part2-kernels
@@ -439,7 +527,7 @@ python chapter11/matmul_triton.py --version grouped \
     --m 257 --n 259 --k 263 --warmup 5 --repeat 20
 ```
 
-### 11.12.3 用 `rocprofv3` 核对 dispatch 与资源
+### 11.13.3 用 `rocprofv3` 核对 dispatch 与资源
 
 profiler 要与 GPU event benchmark 分开跑。先编译并做一次正常预热，再采短 trace：
 
@@ -484,7 +572,7 @@ rocprofv3 --kernel-trace \
 
 当前仓库已提交 curated summary、manifest、profile 索引和实验记录；原始三进程日志与完整 trace 保留在仓库外。没有这些证据时仍不能只抄一个毫秒数并写成“更快”。
 
-## 11.13 练习
+## 11.14 练习
 
 1. 手算 `M=3, N=5, K=7` 时 `C[2,4]` 访问的 A/B 一维下标，再和 CPU reference 循环对照。
 2. 把 `run_all.sh` 的边界 shape 改成 `M=16, N=16, K=17`，说明只有哪一个维度出现尾块，以及 HIP LDS 中哪些位置被填 0。
@@ -496,7 +584,7 @@ rocprofv3 --kernel-trace \
 
 ## 正式实验结果
 
-![Chapter 10 Matmul 性能对比](./images/matmul-performance.png)
+![Chapter 11 Matmul 性能对比](./images/matmul-performance.png)
 
 主 shape 为 `512×512×512` FP32。HIP tiled 的 `0.183022 ms` 稳定优于 naive 的 `0.400323 ms`。Triton grouped 的中心值为 `0.086721 ms`，但三进程范围与 baseline 重叠；`torch-mm` 也出现较宽进程范围。因此这里保留范围，不把单次最低值写成稳定胜负。
 
@@ -518,3 +606,4 @@ rocprofv3 --kernel-trace \
 - [`rocprofv3` 使用文档](https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-rocprofv3.html)
 - [Triton Matrix Multiplication 教程](https://triton-lang.org/main/getting-started/tutorials/03-matrix-multiplication.html) 与 [`tl.dot` API](https://triton-lang.org/main/python-api/generated/triton.language.dot.html)
 - [PyTorch HIP 语义](https://docs.pytorch.org/docs/stable/notes/hip.html)
+- [tile-optimizer：消费卡 GEMM tile 优化实验](https://github.com/datawhalechina/hello-gpu) 附录数据 — 第 11.12 节 tile 扫描数据的来源（RDNA3/RDNA3.5/RDNA4 跨代对照、Triton vs Composable Kernel 对比）

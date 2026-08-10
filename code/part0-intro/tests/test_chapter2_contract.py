@@ -18,6 +18,10 @@ from pathlib import Path
 
 EXPECTED_IMPLEMENTATIONS = {
     "branch-divergence": {"wave-uniform", "wave-divergent"},
+}
+
+PART0_EXPERIMENTS = {
+    "branch-divergence": {"wave-uniform", "wave-divergent"},
     "global-memory": {"stride-1", "stride-17", "stride-257"},
     "lds-banks": {"stride-1", "stride-32", "stride-33"},
     "matrix-path": {"valu", "wmma"},
@@ -39,6 +43,7 @@ FORBIDDEN_CHAPTER_TEXT = {
 
 ROOT = Path(__file__).resolve().parents[3]
 CHAPTER_DIR = ROOT / "code" / "part0-intro" / "chapter2"
+CHAPTER3_DIR = ROOT / "code" / "part0-intro" / "chapter3"
 DOC_PATH = ROOT / "docs" / "part0-intro" / "chapter2" / "index.md"
 EVIDENCE_SUMMARY_PATH = CHAPTER_DIR / "evidence" / "summary.csv"
 
@@ -61,15 +66,23 @@ class Chapter2ContractTest(unittest.TestCase):
     def test_formal_files_exist(self):
         for name in (
             "branch_divergence.hip",
-            "global_memory_access.hip",
-            "lds_bank_conflict.hip",
-            "rdna4_wmma.hip",
             "run_all.sh",
             "profile_all.sh",
             "result_contract.py",
             "plot_results.py",
         ):
             self.assertTrue((CHAPTER_DIR / name).is_file(), name)
+
+    def test_chapter3_formal_files_exist(self):
+        for name in (
+            "global_memory_access.hip",
+            "lds_bank_conflict.hip",
+            "rdna4_wmma.hip",
+            "run_all.sh",
+            "result_contract.py",
+            "plot_results.py",
+        ):
+            self.assertTrue((CHAPTER3_DIR / name).is_file(), name)
 
     def test_run_all_has_formal_controls(self):
         text = self.require_file(CHAPTER_DIR / "run_all.sh").read_text()
@@ -131,6 +144,32 @@ class Chapter2ContractTest(unittest.TestCase):
                 self.assertEqual(row["correct"], "OK")
                 self.assertEqual(row["run_count"], "3")
 
+    def test_chapter3_evidence_summary_matches_contract(self):
+        path = self.require_file(CHAPTER3_DIR / "evidence" / "summary.csv")
+        with path.open(newline="") as handle:
+            reader = csv.DictReader(handle)
+            self.assertIsNotNone(reader.fieldnames)
+            required_columns = REQUIRED_RESULT_FIELDS | {"run_count"}
+            fieldnames = set(reader.fieldnames or [])
+            self.assertTrue(
+                required_columns.issubset(fieldnames),
+                f"chapter3 summary.csv missing columns: "
+                f"{sorted(required_columns - fieldnames)}",
+            )
+            rows = list(reader)
+        expected_pairs = {
+            (experiment, implementation)
+            for experiment, implementations in PART0_EXPERIMENTS.items()
+            for implementation in implementations
+            if experiment != "branch-divergence"
+        }
+        observed_pairs = {
+            (row["experiment"], row["implementation"])
+            for row in rows
+        }
+        self.assertEqual(observed_pairs, expected_pairs)
+        self.assertEqual(len(rows), len(expected_pairs))
+
     def test_chapter_removes_stale_claims(self):
         text = DOC_PATH.read_text()
         for phrase in FORBIDDEN_CHAPTER_TEXT:
@@ -190,10 +229,11 @@ class Chapter2ContractTest(unittest.TestCase):
 
 class Chapter2HipSourceContractTest(unittest.TestCase):
     def read_source(self, name: str) -> str:
-        path = CHAPTER_DIR / name
-        if not path.is_file():
-            self.fail(f"missing formal Chapter 2 file: {path.relative_to(ROOT)}")
-        return path.read_text()
+        for directory in (CHAPTER_DIR, CHAPTER3_DIR):
+            path = directory / name
+            if path.is_file():
+                return path.read_text()
+        self.fail(f"missing formal Chapter 2 experiment source: {name}")
 
     def splice_cpp_lines(self, text: str) -> str:
         """Apply C++ translation phase 2 for LF and CRLF source lines."""
@@ -924,7 +964,15 @@ output.chmod(0o755)
             "if 'show' in args:\n"
             "    spec = args[-1]\n"
             "    name = spec.rsplit(':', 1)[1].rsplit('/', 1)[1]\n"
-            "    data = (pathlib.Path(os.environ['FAKE_GIT_CHAPTER_DIR']) / name).read_bytes()\n"
+            "    base = pathlib.Path(os.environ['FAKE_GIT_CHAPTER_DIR'])\n"
+            "    data = None\n"
+            "    for chapter in ('chapter2', 'chapter3'):\n"
+            "        candidate = base / chapter / name\n"
+            "        if candidate.is_file():\n"
+            "            data = candidate.read_bytes()\n"
+            "            break\n"
+            "    if data is None:\n"
+            "        raise SystemExit(1)\n"
             "    if os.environ.get('FAKE_GIT_SOURCE_MISMATCH') == name: data += b'changed'\n"
             "    sys.stdout.buffer.write(data)\n"
             "    raise SystemExit(0)\n"
@@ -961,7 +1009,9 @@ output.chmod(0o755)
             self.fail(f"missing formal Chapter 2 file: {script.relative_to(ROOT)}")
         part_dir = self.root / "part"
         chapter_dir = part_dir / "chapter2"
+        chapter3_dir = part_dir / "chapter3"
         chapter_dir.mkdir(parents=True, exist_ok=True)
+        chapter3_dir.mkdir(parents=True, exist_ok=True)
         activate_objdump = environment.pop("ACTIVATE_OBJDUMP", False)
         activation = "#!/usr/bin/env bash\n"
         if activate_objdump:
@@ -972,15 +1022,15 @@ output.chmod(0o755)
         else:
             activation += ":\n"
         (part_dir / "activate-rocm.sh").write_text(activation)
+        for source in (name, "branch_divergence.hip"):
+            shutil.copy2(CHAPTER_DIR / source, chapter_dir / source)
         for source in (
-            name,
-            "branch_divergence.hip",
             "global_memory_access.hip",
             "lds_bank_conflict.hip",
             "rdna4_wmma.hip",
         ):
-            shutil.copy2(CHAPTER_DIR / source, chapter_dir / source)
-        environment = environment | {"FAKE_GIT_CHAPTER_DIR": str(chapter_dir)}
+            shutil.copy2(CHAPTER3_DIR / source, chapter3_dir / source)
+        environment = environment | {"FAKE_GIT_CHAPTER_DIR": str(part_dir)}
         return subprocess.run(
             ["bash", str(chapter_dir / name), *arguments],
             cwd=chapter_dir,
@@ -1004,7 +1054,7 @@ output.chmod(0o755)
         result = self.run_script("run_all.sh", RUN_EDGE_CASES="0")
         self.assertEqual(result.returncode, 0, result.stderr)
         result_lines = [line for line in result.stdout.splitlines() if line.startswith("RESULT ")]
-        self.assertEqual(len(result_lines), 10)
+        self.assertEqual(len(result_lines), 2)
         pairs = {
             tuple(
                 token.split("=", 1)[1]
@@ -1026,10 +1076,10 @@ output.chmod(0o755)
                 ("10", "50", "20260726"),
             )
         compiled = [line for line in self.tool_log.read_text().splitlines() if line.startswith("hipcc ")]
-        self.assertEqual(len(compiled), 4)
+        self.assertEqual(len(compiled), 1)
         self.assertEqual(
             {Path(next(arg for arg in shlex.split(line.removeprefix("hipcc ")) if arg.endswith(".hip"))).name for line in compiled},
-            {"branch_divergence.hip", "global_memory_access.hip", "lds_bank_conflict.hip", "rdna4_wmma.hip"},
+            {"branch_divergence.hip"},
         )
         for line in compiled:
             self.assertIn("--offload-arch=gfx1201", shlex.split(line.removeprefix("hipcc ")))
@@ -1039,29 +1089,21 @@ output.chmod(0o755)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             len([line for line in result.stdout.splitlines() if line.startswith("RESULT ")]),
-            10,
+            2,
         )
         executions = [
             line for line in self.tool_log.read_text().splitlines()
             if line.startswith("binary ")
         ]
-        self.assertEqual(len(executions), 14)
-        edge = [dict(token.split("=", 1) for token in line.split()[1:]) for line in executions[:4]]
-        self.assertEqual([fields["implementation"] for fields in edge], ["all", "all", "all", "all"])
-        formal = [dict(token.split("=", 1) for token in line.split()[1:]) for line in executions[4:]]
+        self.assertEqual(len(executions), 3)
+        edge = [dict(token.split("=", 1) for token in line.split()[1:]) for line in executions[:1]]
+        self.assertEqual([fields["implementation"] for fields in edge], ["all"])
+        formal = [dict(token.split("=", 1) for token in line.split()[1:]) for line in executions[1:]]
         self.assertEqual(
             [(fields["experiment"], fields["implementation"], fields["size"]) for fields in formal],
             [
                 ("branch-divergence", "wave-uniform", "16777216"),
                 ("branch-divergence", "wave-divergent", "16777216"),
-                ("global-memory", "stride-1", "16777216"),
-                ("global-memory", "stride-17", "16777216"),
-                ("global-memory", "stride-257", "16777216"),
-                ("lds-banks", "stride-1", "16777216"),
-                ("lds-banks", "stride-32", "16777216"),
-                ("lds-banks", "stride-33", "16777216"),
-                ("matrix-path", "valu", "4096"),
-                ("matrix-path", "wmma", "4096"),
             ],
         )
         self.assertTrue(all(
@@ -1122,7 +1164,7 @@ output.chmod(0o755)
         )
         expected_keys = {
             f"{experiment}__{implementation}"
-            for experiment, implementations in EXPECTED_IMPLEMENTATIONS.items()
+            for experiment, implementations in PART0_EXPERIMENTS.items()
             for implementation in implementations
         }
         expected_route = {
@@ -1315,7 +1357,9 @@ output.chmod(0o755)
                     self.assertTrue(profile_dir.is_symlink())
                 else:
                     self.assertFalse(profile_dir.exists())
-                    if label == "unavailable":
+                    if label == "unavailable" and not Path(
+                        "/opt/rocm/llvm/bin/llvm-objdump"
+                    ).exists():
                         self.assertIn("llvm-objdump is unavailable", result.stderr)
 
     def test_profile_rejects_real_directory_and_advances_symlink_pointer(self):
@@ -1349,7 +1393,7 @@ output.chmod(0o755)
             {path.parent.name for path in positional.rglob("*_kernel_trace.csv")},
             {
                 f"{experiment}__{implementation}"
-                for experiment, implementations in EXPECTED_IMPLEMENTATIONS.items()
+                for experiment, implementations in PART0_EXPERIMENTS.items()
                 for implementation in implementations
             },
         )
@@ -1424,7 +1468,7 @@ output.chmod(0o755)
         with self.subTest("duplicate"):
             self.assert_plot_rejected(duplicate=True)
         with self.subTest("missing"):
-            self.assert_plot_rejected(omit=("matrix-path", "wmma"))
+            self.assert_plot_rejected(omit=("branch-divergence", "wave-divergent"))
         with self.subTest("non-OK"):
             self.assert_plot_rejected(correct="FAIL")
         with self.subTest("failed precheck"):
@@ -1433,16 +1477,6 @@ output.chmod(0o755)
             self.assert_plot_rejected(updates={"postcheck": "FAIL"})
         with self.subTest("non-positive timing"):
             self.assert_plot_rejected(median="0")
-        with self.subTest("non-positive bandwidth"):
-            self.assert_plot_rejected(
-                updates={"logical_bandwidth_gbs": "0"},
-                update_pair=("global-memory", "stride-1"),
-            )
-        with self.subTest("non-positive tflops"):
-            self.assert_plot_rejected(
-                updates={"tflops": "0"},
-                update_pair=("matrix-path", "valu"),
-            )
         with self.subTest("non-finite process value"):
             self.assert_plot_rejected(updates={"median_ms_process_max": "nan"})
         with self.subTest("minimum exceeds median"):
@@ -1474,14 +1508,11 @@ output.chmod(0o755)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         figure = module.build_figure(module.read_summary(summary))
-        self.assertEqual(len(figure.axes), 4)
+        self.assertEqual(len(figure.axes), 1)
         for axis in figure.axes:
             self.assertIn("RX 9070 XT · 3 independent processes", axis.get_title())
             self.assertGreaterEqual(len(axis.containers), 2)
         self.assertEqual(figure.axes[0].get_yscale(), "symlog")
-        self.assertEqual(figure.axes[1].get_yscale(), "log")
-        self.assertEqual(figure.axes[2].get_yscale(), "symlog")
-        self.assertEqual(figure.axes[3].get_yscale(), "log")
         module.pyplot().close(figure)
 
 
@@ -1592,13 +1623,13 @@ class Chapter2PublicationTest(unittest.TestCase):
             self.module.validate_runs([self.log1, self.log2, self.log3])
 
     def test_each_process_has_same_pairs(self):
-        self.write_log(self.log3, omit=("matrix-path", "wmma"))
+        self.write_log(self.log3, omit=("branch-divergence", "wave-divergent"))
         with self.assertRaisesRegex(ValueError, "same experiment/implementation"):
             self.module.validate_runs([self.log1, self.log2, self.log3])
 
     def test_publication_requires_complete_expected_pairs(self):
         for path in (self.log1, self.log2, self.log3):
-            self.write_log(path, omit=("matrix-path", "wmma"))
+            self.write_log(path, omit=("branch-divergence", "wave-divergent"))
         with self.assertRaisesRegex(ValueError, "complete expected experiment/implementation"):
             self.module.validate_runs([self.log1, self.log2, self.log3])
 
@@ -1616,8 +1647,8 @@ class Chapter2PublicationTest(unittest.TestCase):
 
     def test_publication_writes_atomic_aggregate_and_profile_summary(self):
         profile, traces = self.write_profile()
-        traces[("matrix-path", "wmma")].write_text(
-            "Kernel_Name,DurationNs\nwmma_kernel,100\nwmma_kernel,110\n"
+        traces[("branch-divergence", "wave-divergent")].write_text(
+            "Kernel_Name,DurationNs\nwave-divergent_kernel,100\nwave-divergent_kernel,110\n"
         )
 
         self.module.publish(
@@ -1652,25 +1683,25 @@ class Chapter2PublicationTest(unittest.TestCase):
             self.assertRegex(artifact["sha256"], r"^[0-9a-f]{64}$")
         with (self.evidence / "summary.csv").open(newline="") as handle:
             rows = list(csv.DictReader(handle))
-        self.assertEqual(len(rows), 10)
+        self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0]["run_count"], "3")
         self.assertEqual(rows[0]["median_ms"], "1.12")
         self.assertEqual(rows[0]["min_ms_process_min"], "1.01")
         self.assertEqual(rows[0]["min_ms_process_max"], "1.03")
         with (self.evidence / "summary.json").open() as handle:
-            self.assertEqual(len(json.load(handle)), 10)
+            self.assertEqual(len(json.load(handle)), 2)
         with (self.evidence / "profile_summary.csv").open(newline="") as handle:
             profile_rows = list(csv.DictReader(handle))
-        self.assertEqual(len(profile_rows), 10)
+        self.assertEqual(len(profile_rows), 2)
         self.assertNotIn(b"\r\n", (self.evidence / "summary.csv").read_bytes())
         self.assertNotIn(
             b"\r\n", (self.evidence / "profile_summary.csv").read_bytes()
         )
         self.assertIn({
-            "experiment": "matrix-path",
-            "implementation": "wmma",
+            "experiment": "branch-divergence",
+            "implementation": "wave-divergent",
             "dispatch_count": "2",
-            "unique_kernel_names": "wmma_kernel",
+            "unique_kernel_names": "wave-divergent_kernel",
         }, profile_rows)
 
     def test_publication_rejects_duplicate_run_log_basenames(self):
@@ -1714,7 +1745,7 @@ class Chapter2PublicationTest(unittest.TestCase):
     def test_profile_rejects_conflicting_canonical_path_and_filename_identity(self):
         profile, traces = self.write_rocprof_profile()
         trace = traces[("branch-divergence", "wave-uniform")]
-        conflicting = trace.with_name("matrix-path__wmma_kernel_trace.csv")
+        conflicting = trace.with_name("branch-divergence__wave-divergent_kernel_trace.csv")
         trace.rename(conflicting)
 
         with self.assertRaisesRegex(ValueError, "conflicting profile identity"):
@@ -1781,7 +1812,7 @@ class Chapter2PublicationTest(unittest.TestCase):
         profile, traces = self.write_rocprof_profile()
         external = self.root / "external_kernel_trace.csv"
         external.write_text("Kernel_Name\noutside_kernel\n")
-        trace = traces[("matrix-path", "wmma")]
+        trace = traces[("branch-divergence", "wave-divergent")]
         trace.unlink()
         trace.symlink_to(external)
 
@@ -1790,7 +1821,7 @@ class Chapter2PublicationTest(unittest.TestCase):
 
     def test_profile_rejects_missing_expected_pair(self):
         profile, traces = self.write_profile()
-        traces[("matrix-path", "wmma")].unlink()
+        traces[("branch-divergence", "wave-divergent")].unlink()
         with self.assertRaisesRegex(ValueError, "complete expected experiment/implementation"):
             self.module.publish(
                 [self.log1, self.log2, self.log3], profile, self.evidence, "a" * 40
@@ -1805,7 +1836,7 @@ class Chapter2PublicationTest(unittest.TestCase):
         for expected_error, contents in cases.items():
             with self.subTest(expected_error=expected_error):
                 profile, traces = self.write_profile()
-                traces[("matrix-path", "wmma")].write_text(contents)
+                traces[("branch-divergence", "wave-divergent")].write_text(contents)
                 with self.assertRaisesRegex(ValueError, expected_error):
                     self.module.publish(
                         [self.log1, self.log2, self.log3], profile, self.evidence, "a" * 40

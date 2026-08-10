@@ -12,7 +12,7 @@ usage() {
 
 require_chapter() {
     local chapter="${1:-}"
-    if [[ ! "${chapter}" =~ ^chapter(7|8|9|10|11|12)$ ]]; then
+    if [[ ! "${chapter}" =~ ^chapter(8|9|10|11|12|13)$ ]]; then
         echo "invalid chapter: ${chapter}" >&2
         exit 2
     fi
@@ -37,7 +37,7 @@ case "${command}" in
         usage
         ;;
     status)
-        remote_status_command="test -d $(quote_for_remote_shell "${REMOTE_ROOT}") && printf 'remote_root=present\\n' || printf 'remote_root=missing\\n'; command -v hipcc; command -v rocprofv3; command -v uv || true"
+        remote_status_command="test -d $(quote_for_remote_shell "${REMOTE_ROOT}") && printf 'remote_root=present\\n' || printf 'remote_root=missing\\n'; command -v hipcc >/dev/null || exit 1; command -v rocprofv3 >/dev/null || exit 1; command -v uv >/dev/null || exit 1"
         ssh -o BatchMode=yes "${REMOTE_HOST}" "${remote_status_command}"
         ;;
     sync)

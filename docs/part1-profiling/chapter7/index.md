@@ -21,9 +21,9 @@ description: "Hello GPU 第7章 · 看懂参考线、生成工作点并选择排
 
 | 工作点位置 | 先想到什么 | 常见下一步 |
 | ---- | ---- | ---- |
-| AI 小，接近带宽斜线 | 典型 memory-bound | 减少访存、做融合或提高数据复用 |
+| AI 小，接近带宽斜线 | 典型访存受限 | 减少访存、做融合或提高数据复用 |
 | AI 小，离斜线很远 | 访存效率不高 | 检查地址是否连续、是否有多余读写 |
-| AI 大，靠近水平线 | 典型 compute-bound | 使用 WMMA、降精度或减少计算 |
+| AI 大，靠近水平线 | 典型算力受限 | 使用 WMMA、降精度或减少计算 |
 | 离两条线都远 | 还有别的开销 | 检查 launch、同步和输入规模 |
 
 Roofline 不会直接告诉你哪一行代码有问题。它更像一张地图：先根据 AI 选择访存或计算方向，再看工作点离相应上限还有多少空间。
@@ -43,7 +43,7 @@ Roofline 不会直接告诉你哪一行代码有问题。它更像一张地图�
 算术强度 AI = 1 / 12 ≈ 0.083 FLOP/Byte
 ```
 
-`0.083 FLOP/Byte` 很低，所以 vector add 会落在图的左侧，属于典型的 memory-bound 算子。
+`0.083 FLOP/Byte` 很低，所以 vector add 会落在图的左侧，属于典型的 访存受限算子。
 
 画工作点只需要三样东西：
 
@@ -68,7 +68,7 @@ Roofline 不会直接告诉你哪一行代码有问题。它更像一张地图�
 | coalesced | 0.083 FLOP/Byte | 0.334 ms | 0.0503 TFLOPS | 603 GB/s |
 | linecross stride=32 | 0.083 FLOP/Byte | 2.25 ms | 0.00748 TFLOPS | 89.7 GB/s |
 
-Roofline 的参考线沿用第 3 章独立测得的硬件基线：大数组 copy 的 GDDR6 稳态带宽为 510 GB/s，fp32 matmul 为 10.6 TFLOPS。
+Roofline 的参考线沿用仓库 `plot_roofline_ch6.py` 内置的独立实测硬件基线：大数组 copy 的 GDDR6 稳态带宽为 510 GB/s，fp32 matmul 为 10.6 TFLOPS。
 
 这里会出现一个值得认识的现象：coalesced 按 `12 × n / t` 换算出的有效带宽是 603 GB/s，高于 510 GB/s 的 GDDR6 参考线。这不表示显存突破了硬件上限；有效带宽统计的是算法有效字节，而本例的工作集和写路径还可能受到 cache 等因素影响。这个点更适合用来比较两个实现，而不是当作实际 DRAM 流量。
 
@@ -90,11 +90,11 @@ flowchart TD
 从代码、实测时间和硬件上限得到 Roofline 工作点。
 :::
 
-如 @fig-data-to-roofline 所示，Roofline 用到的输入并不多。先把数据量和计算量算清楚，再把实测时间代进去即可。图 7.2 的横轴和纵轴都是对数轴，同一格表示倍数变化，而不是固定差值；本例是 fp32，所以只保留 fp32 计算参考线。
+如 @fig-data-to-roofline 所示，Roofline 用到的输入并不多。先把数据量和计算量算清楚，再把实测时间代进去即可。本例是 fp32，所以只保留 fp32 计算参考线。
 
-图 7.2 不是 `rocprofv3` 自动导出的，也不会在绘图时重新运行 vector add。它由仓库中的 `plot_roofline_ch6.py` 生成，脚本使用两组已经测得的数据：
+图 7.2 不是 `rocprofv3` 自动导出的，也不会在绘图时重新运行 vector add。它由仓库中的 `plot_roofline_ch6.py` 生成，横轴和纵轴都是对数轴——同一格表示倍数变化，而不是固定差值。脚本使用两组已经测得的数据：
 
-- 第 3 章的大数组 copy 带宽 `510 GB/s` 和 fp32 matmul 性能 `10.6 TFLOPS`，用来画两条参考线；
+- `plot_roofline_ch6.py` 内置的大数组 copy 带宽 `510 GB/s` 和 fp32 matmul 性能 `10.6 TFLOPS`，用来画两条参考线；
 - 第 6 章的 coalesced、linecross 有效带宽，结合 `AI = 1 / 12` 算出两个工作点的纵坐标。
 
 从仓库根目录开始，在实验机上运行：
@@ -111,7 +111,7 @@ python chapter7/plot_roofline_ch6.py --save
 ::: figure fig-roofline-vadd-linecross
 ![Ch5/Ch6 实测 Roofline：coalesced 与 linecross 两个工作点](./images/roofline-ch6.png)
 
-第 5、8 章实测数据经绘图脚本生成的 9070XT Roofline 工作点。
+第 6 章实测数据经绘图脚本生成的 RX 9070 XT Roofline 工作点。
 :::
 
 如 @fig-roofline-vadd-linecross 所示，两个版本按算法口径计算出的算术强度相同。蓝色斜线是独立实测的 510 GB/s GDDR6 参考线，红色水平线是 10.6 TFLOPS 的 fp32 计算参考值。两个工作点的区别在纵轴：
@@ -131,7 +131,7 @@ python chapter7/plot_roofline_ch6.py --save
 | AI 很高，离水平线远 | 是否走了矩阵计算路径 | 对比 WMMA 和普通 VALU 实现 |
 | 输入很小，点很低 | launch 是否占了大头 | 放大输入，观察时间是否近似线性增长 |
 | 许多短 kernel 串联 | 是否频繁启动和同步 | 看 kernel trace 的数量与间隔 |
-| 使用大量寄存器或 LDS | 是否限制了 occupancy | 对比 VGPR、SGPR、LDS 用量 |
+| 使用大量寄存器或 LDS | 是否限制了 占用率 | 对比 VGPR、SGPR、LDS 用量 |
 
 回到 vector add：它的 AI 只有 0.083，所以先从访存方向检查是合理的。不过，第 6 章的 stride 还会同时改变每线程循环次数和 Grid Size；当前曲线只能提示方向，不能单独证明访存合并就是全部原因。下一步应补一个线程数和每线程工作量都固定的对照。
 
@@ -216,7 +216,7 @@ Part 2 的 Reduction、Softmax、GEMM 和 Attention 会继续使用这条路线�
 ## 本章小结
 
 - Roofline 先用横轴和拐点判断理论瓶颈方向，再看工作点离对应上限还有多远。
-- vector add 的 AI 约为 0.083 FLOP/Byte，理论上位于 memory-bound 一侧；有效带宽点还会受到算法口径和 cache 的影响。
+- vector add 的 AI 约为 0.083 FLOP/Byte，理论上位于 访存受限一侧；有效带宽点还会受到算法口径和 cache 的影响。
 - Roofline 负责选择排查方向，`rocprofv3` 和单变量实验负责找到更具体的原因。
 - 一页性能记录只需要环境、命令、结果、判断和下一步。
 

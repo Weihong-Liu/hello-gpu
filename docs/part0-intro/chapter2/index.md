@@ -9,7 +9,7 @@ description: "Hello GPU 第2章 · grid/workgroup/wavefront/lane 的工作划分
 
 > 第 1 章我们确认了环境是通的——ROCm 看得到 GPU、PyTorch 用得上 GPU、最小 HIP 程序能编译运行，环境这张地图已经在你手上。现在该铺开第二张地图了：**GPU 体系结构**。本章会做三件事：跟着一次真实的 kernel 提交（`hipLaunchKernelGGL`）看清线程怎么被划分（grid → workgroup → wavefront → lane）、搞清楚这些波前落到哪块硬件上执行（WGP/CU/SIMD）、再用 EXEC 掩码弄懂分支发散为什么会让一整排线程被拖住。
 >
-> 这套「软件怎么划分、硬件怎么执行」的两层视角，是后面一切优化的心智地基：下一章会接着讲片上资源和内存层级；Part 2 的每个算子优化——合并访存（[第 8 章 Element-Wise](../../part2-kernels/chapter8/index.md)）、跨线程归约（[第 9 章 Reduction](../../part2-kernels/chapter9/index.md)）、分块与寄存器累加（[第 11 章 GEMM](../../part2-kernels/chapter11/index.md)）、矩阵指令与融合（[第 12 章 Attention/Fusion](../../part2-kernels/chapter12/index.md)）——都建立在它之上。本章只负责把模型立起来，具体怎么优化，留到对应算子章。
+> 这套「软件怎么划分、硬件怎么执行」的两层视角，是后面一切优化的心智地基：下一章会接着讲片上资源和内存层级；Part 2 的每个算子优化——合并访存（[第 8 章 Element-Wise](../../part2-kernels/chapter8/index.md)）、跨线程归约（[第 9 章 Reduction](../../part2-kernels/chapter9/index.md)）、分块与寄存器累加（[第 11 章 GEMM-Like](../../part2-kernels/chapter11/index.md)）、矩阵指令与融合（[第 12 章 Fusion：融合算子](../../part2-kernels/chapter12/index.md)）——都建立在它之上。本章只负责把模型立起来，具体怎么优化，留到对应算子章。
 
 本章对应代码在：
 
@@ -42,7 +42,7 @@ flowchart LR
 一次 HIP kernel 的全景：本章（上）覆盖从 launch 到 EXEC 的前半段；资源与内存（后半段）见第 3 章。
 :::
 
-这张图是**从「你写的代码」到「硬件怎么执行」的导览图**，不是某一次运行的真实录像。到底被分到哪个硬件单元、同时跑几个 wave、缓存命中没有——这些都得靠编译产物和 profiling 工具去证明，不能看图说话。另外，不少人是从 CUDA（NVIDIA）转过来的，为了避免把 CUDA 的习惯直接套到 AMD 上，我们先把两边对应的名词固定下来：
+这张图是**从「你写的代码」到「硬件怎么执行」的导览图**，不是某一次运行的真实录像。到底被分到哪个硬件单元、同时跑几个 wavefront、缓存命中没有——这些都得靠编译产物和 profiling 工具去证明，不能看图说话。另外，不少人是从 CUDA（NVIDIA）转过来的，为了避免把 CUDA 的习惯直接套到 AMD 上，我们先把两边对应的名词固定下来：
 
 | HIP 里的词 | CUDA 里常见的词 | AMD 执行模型里的词 | 本章怎么理解它 |
 | --- | --- | --- | --- |
@@ -100,20 +100,20 @@ HIP 的线程层级：grid 切成 workgroup，workgroup 再切成 wavefront（�
 ::: figure fig-ch2-wavefront-split
 ```mermaid
 flowchart TB
-    WG[一个 256-thread workgroup] --> W0[wave 0: lanes 0-31]
-    WG --> W1[wave 1: lanes 32-63]
+    WG[一个 256-thread workgroup] --> W0[wavefront 0: lanes 0-31]
+    WG --> W1[wavefront 1: lanes 32-63]
     WG --> WN[...]
-    WG --> W7[wave 7: lanes 224-255]
+    WG --> W7[wavefront 7: lanes 224-255]
     NOTE[仅当此 dispatch 以 wave32 执行时成立]
     W0 --- NOTE
 ```
 
-一个 256-thread workgroup 在实际 wave size 为 32 时的 8×wave32 分组示意；它不将此实例泛化到 wave64 或其他 block shape。
+一个 256-thread workgroup 在实际 wavefront size 为 32 时的 8×wave32 分组示意；它不将此实例泛化到 wave64 或其他 block shape。
 :::
 
-为什么我们关心的是波前，而不是单个线程？因为硬件执行的最小单位就是波前：同一个 wave 里的所有 lane 共用一段指令，要动一起动。遇到边界或分支时，其中一些 lane 会被暂时关掉，但它们仍然属于同一个波前。
+为什么我们关心的是波前，而不是单个线程？因为硬件执行的最小单位就是波前：同一个 wavefront 里的所有 lane 共用一段指令，要动一起动。遇到边界或分支时，其中一些 lane 会被暂时关掉，但它们仍然属于同一个波前。
 
-打个比方：一个 workgroup 是一辆大巴上的全体乘客，wavefront 则是其中一排座位——硬件一次只对一排下达同一个动作，整排一起做。本机是 wave32，256 人正好坐满 8 排；要是换成 wave64 的车，每排座位数和分支边界都得重新算。这个比方到这里为止：它帮你建立「成排执行」的直觉，但真实的调度细节，还是要以下文的 LLVM 文档和 profiling 结果为准。所以别把 `warpSize=32` 当成「所有 AMD 显卡都固定是 32」，也别看到一个 workgroup 有多少线程，就想当然地认为一条 wave 有多宽。
+打个比方：一个 workgroup 是一辆大巴上的全体乘客，wavefront 则是其中一排座位——硬件一次只对一排下达同一个动作，整排一起做。本机是 wave32，256 人正好坐满 8 排；要是换成 wave64 的车，每排座位数和分支边界都得重新算。这个比方到这里为止：它帮你建立「成排执行」的直觉，但真实的调度细节，还是要以下文的 LLVM 文档和 profiling 结果为准。所以别把 `warpSize=32` 当成「所有 AMD 显卡都固定是 32」，也别看到一个 workgroup 有多少线程，就想当然地认为一条 wavefront 有多宽。
 
 **迁移范围：** 「wavefront」这个词作为 AMD 的术语，到哪里都适用；但本节「8 个 wave32」的结论，只适用于 256 线程的 block、且波前大小确实是 32 的情况。换成 wave64 的 kernel，分组和分支边界都要重新算。
 
@@ -140,7 +140,7 @@ WGP/CU/SIMD 的安全读法：图表达 LLVM 的执行模式关系，不规定�
 
 RX 9070 XT 的官方规格是 64 个 CU；本章环境里 `rocminfo` 也确实报告 64 个物理 CU 和 `gfx1201`。但有一个容易踩的坑：HIP 里的 `hipDeviceProp_t::multiProcessorCount` 在本机读出来是 **32**，而不是 64。我们在实验输出里就原样记成 `hip_multiprocessor_count=32`，**绝不把它改口叫成物理 CU 数**。[AMD 的 64 CU 产品规格](https://www.amd.com/en/products/graphics/desktops/radeon/9000-series/amd-radeon-rx-9070xt.html) 换句话说，`multiProcessorCount` 可以当作这次运行环境的一个诊断字段，但**不能**拿它去代替真实的物理 CU 总数。
 
-再说 SIMD：它是真正发射向量指令的地方。它解释了为什么「同一个 wave 的 lane 要做同一类工作」很重要——但仅此而已。我们**不能**从编程模型出发，去推断每条指令要几个周期、每个 WGP 里固定有几个什么单元、或者一个 kernel 的并发度有多高。这些都是编译目标、指令、资源占用和当时的调度状态共同决定的，得实测才知道。
+再说 SIMD：它是真正发射向量指令的地方。它解释了为什么「同一个 wavefront 的 lane 要做同一类工作」很重要——但仅此而已。我们**不能**从编程模型出发，去推断每条指令要几个周期、每个 WGP 里固定有几个什么单元、或者一个 kernel 的并发度有多高。这些都是编译目标、指令、资源占用和当时的调度状态共同决定的，得实测才知道。
 
 把软件和硬件两层对应起来看（@fig-ch2-sw-hw），就不容易把两边混为一谈：
 
@@ -236,7 +236,7 @@ __global__ void branch_kernel(const float* input, float* output,
 ```bash
 cd code/part0-intro/chapter2
 hipcc --offload-arch=gfx1201 -O3 -std=c++17 branch_divergence.hip -o branch_divergence
-# --implementation all 会依次跑 wave-uniform 和 wave-divergent 两种
+# --implementation all 会依次跑 wavefront-uniform 和 wavefront-divergent 两种
 ./branch_divergence --implementation all --size 16777216 --warmup 10 --repeat 50
 ```
 
@@ -251,8 +251,10 @@ hipcc --offload-arch=gfx1201 -O3 -std=c++17 branch_divergence.hip -o branch_dive
 
 | 实现 | 中位数时间（ms） | 吞吐（TFLOPS） | 相对差距 |
 | --- | ---: | ---: | ---: |
-| `wave-uniform` | 0.237341 [0.237041, 0.239320] | 0.565507 | 基线 |
-| `wave-divergent` | 0.245241 [0.243860, 0.246920] | 0.547289 | +3.33% |在真实算子里，分支发散要不要紧、怎么排布数据来缓解，会结合具体场景在 Part 2 反复出现——比如 [第 9 章 Reduction](../../part2-kernels/chapter9/index.md) 里归约树的 lane 参与模式。
+| `wavefront-uniform` | 0.237341 [0.237041, 0.239320] | 0.565507 | 基线 |
+| `wavefront-divergent` | 0.245241 [0.243860, 0.246920] | 0.547289 | +3.33% |
+
+在真实算子里，分支发散要不要紧、怎么排布数据来缓解，会结合具体场景在 Part 2 反复出现——比如 [第 9 章 Reduction](../../part2-kernels/chapter9/index.md) 里归约树的 lane 参与模式。
 
 **迁移范围：** EXEC 这套掩码执行的模型，来自 LLVM AMDGPU 文档，是通用的；但上面那个约 3% 只属于那套受控组合，**不能**拿去当别的 kernel 的预算。
 
@@ -260,7 +262,7 @@ hipcc --offload-arch=gfx1201 -O3 -std=c++17 branch_divergence.hip -o branch_dive
 
 - 一个 kernel 从 launch 出发，先被切成 workgroup，再被切成 wavefront（本机是 wave32）；每个 lane 对应一个全局下标。这是**软件层**的划分。
 - 它最终落到 WGP/CU/SIMD 哪块硬件，由 LLVM 的执行模式和编译器决定——唯一能保证的只是「同一 workgroup 的 wavefront 落在同一 WGP」。别从源码或 block 大小反推物理拓扑。
-- 同一个 wave 的 lane 走不同分支时，靠 EXEC 掩码轮流执行 then/else 再合流；发散的代价是「整排被最长路径拖住」，而不是两条路并行。
+- 同一个 wavefront 的 lane 走不同分支时，靠 EXEC 掩码轮流执行 then/else 再合流；发散的代价是「整排被最长路径拖住」，而不是两条路并行。
 - 这套「软件划分 → 硬件执行」的两层视角是全书的地基。下一章我们补上另一半：片上资源（能同时塞下多少活儿）和内存层级（数据从哪里取）。
 
 ## 自我检验
@@ -270,12 +272,12 @@ hipcc --offload-arch=gfx1201 -O3 -std=c++17 branch_divergence.hip -o branch_dive
 1. 能说清 grid、workgroup、wavefront、lane 之间的层级关系，以及 `blockDim.x=256` 为什么在本机是 8 个 wave32。
 2. 能区分「软件划分」（workgroup/wavefront）和「硬件落点」（WGP/CU/SIMD），并说出 LLVM 唯一保证的是什么。
 3. 能区分 `hipDeviceProp_t::multiProcessorCount=32` 与 `rocminfo` 的 64 physical CU，并解释二者为什么不能互换命名。
-4. 能解释 EXEC 掩码如何让同一个 wave 的 lane 分别走 then/else 再合流，以及为什么分支发散的代价是「整排被最长路径拖住」。
+4. 能解释 EXEC 掩码如何让同一个 wavefront 的 lane 分别走 then/else 再合流，以及为什么分支发散的代价是「整排被最长路径拖住」。
 5. 能把 thread/block/warp/shared memory 这些 CUDA 名词，对应到 HIP 与 AMD 执行模型里的说法。
 
 ## 延伸阅读
 
 - [AMD Radeon RX 9070 XT 产品规格](https://www.amd.com/en/products/graphics/desktops/radeon/9000-series/amd-radeon-rx-9070xt.html)：产品级 CU、显存与理论带宽。
-- [ROCm GPU specifications](https://rocm.docs.amd.com/en/latest/reference/gpu-specs.html)：用 target 表核对 `gfx1201` 的 wave、LDS 和寄存器资源。
+- [ROCm GPU specifications](https://rocm.docs.amd.com/en/latest/reference/gpu-specs.html)：用 target 表核对 `gfx1201` 的 wavefront、LDS 和寄存器资源。
 - [LLVM AMDGPU Usage Guide](https://llvm.org/docs/AMDGPUUsage.html)：查 WGP/CU execution mode、wavefront 与 EXEC 的编译器级语义。
 - 选做实验：[`code/part0-intro/chapter2/`](https://github.com/datawhalechina/hello-gpu/tree/dev/code/part0-intro/chapter2)（branch_divergence 受控对照）。

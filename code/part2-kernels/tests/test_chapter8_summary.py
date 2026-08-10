@@ -22,7 +22,7 @@ IMPLEMENTATIONS = (
 )
 
 
-class Chapter7SummaryTest(unittest.TestCase):
+class Chapter8SummaryTest(unittest.TestCase):
     def _source_hash(self, chapter: Path) -> str:
         digest = hashlib.sha256()
         for path in sorted(
@@ -117,7 +117,7 @@ class Chapter7SummaryTest(unittest.TestCase):
         )
 
     def _summarize(self, chapter: Path) -> subprocess.CompletedProcess[str]:
-        script = Path(__file__).parents[1] / "chapter7" / "summarize_results.py"
+        script = Path(__file__).parents[1] / "chapter8" / "summarize_results.py"
         return subprocess.run(
             [sys.executable, str(script), "--chapter-dir", str(chapter), "--git-commit", "abc1234"],
             text=True,
@@ -252,7 +252,7 @@ class Chapter7SummaryTest(unittest.TestCase):
             self.assertIn("independent_runs", completed.stderr)
 
     def test_run_and_profile_manifests_record_source_identity(self) -> None:
-        chapter = Path(__file__).parents[1] / "chapter7"
+        chapter = Path(__file__).parents[1] / "chapter8"
         run_all = (chapter / "run_all.sh").read_text(encoding="utf-8")
         profile_all = (chapter / "profile_all.sh").read_text(encoding="utf-8")
         for source in (run_all, profile_all):
@@ -261,9 +261,9 @@ class Chapter7SummaryTest(unittest.TestCase):
 
     def test_scripts_reject_missing_source_commit_before_writes(self) -> None:
         for filename, generated in (("run_all.sh", ("logs", "profiles")), ("profile_all.sh", ("logs", "profiles"))):
-            source = Path(__file__).parents[1] / "chapter7" / filename
+            source = Path(__file__).parents[1] / "chapter8" / filename
             with self.subTest(filename=filename), tempfile.TemporaryDirectory() as temporary:
-                chapter = Path(temporary) / "chapter7"
+                chapter = Path(temporary) / "chapter8"
                 chapter.mkdir()
                 script = chapter / filename
                 shutil.copy2(source, script)
@@ -275,7 +275,7 @@ class Chapter7SummaryTest(unittest.TestCase):
                     self.assertFalse((chapter / name).exists(), name)
 
     def test_scripts_activate_python_before_source_hash(self) -> None:
-        chapter = Path(__file__).parents[1] / "chapter7"
+        chapter = Path(__file__).parents[1] / "chapter8"
         for filename in ("run_all.sh", "profile_all.sh"):
             with self.subTest(filename=filename):
                 source = (chapter / filename).read_text(encoding="utf-8")

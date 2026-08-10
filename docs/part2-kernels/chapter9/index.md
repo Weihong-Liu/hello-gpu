@@ -76,8 +76,8 @@ x = [3, 1, 7, 0, 4, 1, 6, 2]
 
 ```text
 每个线程累加若干输入
-→ 一个 wave 合并线程局部和
-→ 一个 block 合并多个 wave
+→ 一个 wavefront 合并线程局部和
+→ 一个 block 合并多个 wavefront
 → 每个 block 写一个 partial
 → 另一次 dispatch 合并所有 partial
 ```
@@ -200,7 +200,7 @@ for (std::size_t index = first; index < size; index += step) {
 
 这一步有两个作用：减少第一阶段 block 数，并把一部分加法变成不需要同步的线程私有工作。默认 grid 取“不超过完整 grid 的 `CU 数 × 8`”；它只是待实验的起点，可用 `--grid` 覆盖，不是硬件通用最优值。
 
-接着在 wave 内用 shuffle 交换 lane 的寄存器值：
+接着在 wavefront 内用 shuffle 交换 lane 的寄存器值：
 
 ```cpp
 __device__ float wave_reduce_sum(float value) {
@@ -211,7 +211,7 @@ __device__ float wave_reduce_sum(float value) {
 }
 ```
 
-一个 wave 的 lane 天然按锁步方式执行，shuffle 可以直接读取另一个 lane 的值，不必为每一轮都写 LDS 再做 block 屏障。不同 wave 仍需要协作，因此代码让每个 wave 的 lane 0 写一个 `wave_sums[wave]`，同步一次，再让第一个 wave 合并这些 wave sums。
+一个 wavefront 的 lane 天然按锁步方式执行，shuffle 可以直接读取另一个 lane 的值，不必为每一轮都写 LDS 再做 block 屏障。不同 wavefront 仍需要协作，因此代码让每个 wavefront 的 lane 0 写一个 `wave_sums[wavefront]`，同步一次，再让第一个 wavefront 合并这些 wavefront sums。
 
 第一阶段最终写出 `grid` 个 partial；第二阶段复用同一个局部归约 kernel，以一个 block 对 partial buffer 做 grid-stride 累加并写出最终标量：
 
@@ -280,7 +280,7 @@ python chapter9/reduction_triton.py --version t1 --size 1027 \
 | ---- | ---- | ---- |
 | 输入边界 | 标量 `if (index < size)` | load mask，越界填 `0` |
 | 线程/program 私有工作 | FP32 寄存器 `local` | tile 张量 `acc` |
-| wave/tile 内合并 | `__shfl_down` | `tl.sum` 交给编译器降低 |
+| wavefront/tile 内合并 | `__shfl_down` | `tl.sum` 交给编译器降低 |
 | block/program 输出 | 一个 block 写一个 partial | 一个 program 写一个 partial |
 | 跨组同步 | 结束 stage 1 dispatch | 结束 stage 1 dispatch |
 | 最终合并 | 第二次 HIP kernel | `second_reduction_kernel` |
@@ -295,7 +295,7 @@ python chapter9/reduction_triton.py --version t1 --size 1027 \
 5. 谁负责合并所有 partial？
 ```
 
-HIP 暴露 wave、LDS 和 block 屏障，适合研究底层协作；Triton 用 tile 与 `tl.sum` 缩短表达路径，适合快速改变 program 划分。两者都不能跳过边界、reference 和完整两阶段计时。
+HIP 暴露 wavefront、LDS 和 block 屏障，适合研究底层协作；Triton 用 tile 与 `tl.sum` 缩短表达路径，适合快速改变 program 划分。两者都不能跳过边界、reference 和完整两阶段计时。
 
 ## 9.9 一键运行与 `rocprofv3` Profiling
 
@@ -378,14 +378,14 @@ rocprofv3 --kernel-trace \
 完成本章不要求某个实现必须最快，但应同时满足：
 
 - 8 个边界长度和主 shape 的所有 `RESULT` 都是 `correct=OK`；
-- 能指出 atomic、LDS、wave shuffle 和二阶段各自处理哪一层竞争；
+- 能指出 atomic、LDS、wavefront shuffle 和二阶段各自处理哪一层竞争；
 - 能从 trace 证明实际 dispatch 数，而不是从源码名字猜；
 - 能复述 event 的计时边界，并明确逻辑带宽不等于物理显存流量；
 - 若某项未运行或失败，实验记录明确写出，不能静默跳过。
 
 ## 正式实验结果
 
-![Chapter 8 Sum Reduction 性能对比](./images/reduction-performance.png)
+![Chapter 9 Sum Reduction 性能对比](./images/reduction-performance.png)
 
 主 shape 为 `N=16,777,216` FP32。`hip-atomic` 的进程 median 中位数为 `34.4608 ms`，`hip-lds` 为 `4.32771 ms`，而二阶段 HIP、Triton t0/t1 位于 `0.0508–0.0599 ms`。这说明全局同地址争用和仅做 block 内归约都是本 shape 的负基线；同时，逻辑带宽不能当作物理显存（GDDR6）流量。
 
@@ -394,7 +394,7 @@ rocprofv3 --kernel-trace \
 ## 本章小结
 
 - Reduction 的难点来自多输入共同更新少输出；普通 `*output += value` 存在数据竞争。
-- 树形归约没有减少加法总数，却把串行依赖深度从 `O(N)` 降为 `O(log N)`，并允许分层映射到 thread、wave、block 和多次 dispatch。
+- 树形归约没有减少加法总数，却把串行依赖深度从 `O(N)` 降为 `O(log N)`，并允许分层映射到 thread、wavefront、block 和多次 dispatch。
 - HIP atomic 是最短正确起点；LDS 把全局 atomic 缩减到每 block 一次；局部累加与 Wave Shuffle 继续减少 block 数、LDS 访问和同步。
 - 普通 kernel 没有跨 block 全局屏障。写 partial 后结束 dispatch，再用第二阶段合并，是清晰且可验证的同步边界。
 - Triton 用 program、grid-stride tile、mask 与 `tl.sum` 表达相同层次；抽象更高并不免除 partial buffer、第二阶段和完整计时。

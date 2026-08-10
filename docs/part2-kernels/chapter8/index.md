@@ -21,9 +21,9 @@ import ElementwiseJourney from './elementwise-journey.vue'
 
 | 阅读路线 | 更适合谁 | 建议顺序 | 能带走什么 |
 | ---- | ---- | ---- | ---- |
-| 完整路线 | 第一次系统学习 GPU Kernel，希望理解两种写法 | 7.1 → 7.2 → 7.3 → 7.4 → 7.5 → 7.6 → 7.7 → 7.8 → 7.9 | 同一个算子从数学语义到实验闭环的全貌 |
-| [HIP 路线](#_7-4-hip-从标量线程到受控访存实验) | 想看清 thread、wavefront、显存地址与向量加载，愿意写 C++ | 7.1 → 7.2 → 7.3 → 7.4 → 7.6 → 7.8 → 7.9 | 更强的底层控制与性能分析入口 |
-| [Triton 路线](#_7-5-triton-从最小-tile-到参数实验) | 熟悉 Python/PyTorch，想先快速写出可验证的自定义算子 | 7.1 → 7.2 → 7.3 → 7.5 → 7.6 → 7.8 → 7.9 | program/tile/mask 的最小心智模型 |
+| 完整路线 | 第一次系统学习 GPU Kernel，希望理解两种写法 | 8.1 → 8.2 → 8.3 → 8.4 → 8.5 → 8.6 → 8.7 → 8.8 → 8.9 | 同一个算子从数学语义到实验闭环的全貌 |
+| [HIP 路线](#_8-4-hip-从标量线程到受控访存实验) | 想看清 thread、wavefront、显存地址与向量加载，愿意写 C++ | 8.1 → 8.2 → 8.3 → 8.4 → 8.6 → 8.8 → 8.9 | 更强的底层控制与性能分析入口 |
+| [Triton 路线](#_8-5-triton-从最小-tile-到参数实验) | 熟悉 Python/PyTorch，想先快速写出可验证的自定义算子 | 8.1 → 8.2 → 8.3 → 8.5 → 8.6 → 8.8 → 8.9 | program/tile/mask 的最小心智模型 |
 
 ::: tip 先记住一句话
 HIP 常从“当前 thread 得到哪个标量下标”出发；Triton 常从“当前 program 生成哪一块下标”出发。两者最后都必须回答同一件事：**读了哪些地址，算了什么，写回哪里。**
@@ -118,7 +118,7 @@ HIP：    当前 thread → 标量 index   → 标量 load / add / store
 Triton： 当前 program → 一块 offsets → 分块 load / add / store
 ```
 
-两条路线改变的是源码直接控制的层次，不是 Vector Add 的数学语义。它们都要覆盖相同的有效下标，也都要经过正确性检查与实测，不能因为抽象层次更高或更低就预设谁更快。真实的 HIP API 留到 [7.4](#_7-4-hip-从标量线程到受控访存实验)，Triton 最小模板留到 [7.5](#_7-5-triton-从最小-tile-到参数实验) 再逐行展开。
+两条路线改变的是源码直接控制的层次，不是 Vector Add 的数学语义。它们都要覆盖相同的有效下标，也都要经过正确性检查与实测，不能因为抽象层次更高或更低就预设谁更快。真实的 HIP API 留到 [8.4](#_8-4-hip-从标量线程到受控访存实验)，Triton 最小模板留到 [8.5](#_8-5-triton-从最小-tile-到参数实验) 再逐行展开。
 
 ### 8.1.3 什么不属于这一类
 
@@ -160,7 +160,7 @@ C = [9, 2, 3, 5]
 | 数据类型 | 32 位浮点数（FP32） |
 | 输入 | 用同一确定性整数公式生成，再转成 FP32 |
 | 参考结果 | CPU 逐元素执行同一个 FP32 加法 |
-| 边界 | 覆盖小于 wave、刚好等于 block、比 block 多 1、不能被 4 整除等长度 |
+| 边界 | 覆盖小于 wavefront、刚好等于 block、比 block 多 1、不能被 4 整除等长度 |
 | 正确性 | 正式计时前检查一次，计时后再检查一次 |
 | 计时范围 | 只计 GPU kernel，不含分配、输入生成与 Host-to-Device 拷贝 |
 
@@ -205,7 +205,7 @@ $$
 
 > Vector Add 每搬 12 Byte 只做 1 次加法，当前大 shape 可能更容易受显存带宽限制，而不是受浮点计算吞吐限制。
 
-第 7 章已经解释怎样在 Roofline 上读工作点；这里不再重推硬件参考线，只保留与当前算子直接相关的假设：Vector Add 的逻辑算术强度很低，当前大 shape 更可能先受数据搬运限制。注意用词仍是“更可能”。后文会用 Radeon RX 9070 XT 上的 GPU event 时间和受控地址实验检验它。即使逻辑有效带宽较高，也只能说明结果与带宽受限假设一致；没有物理流量计数器时，不能把逻辑字节直接当成显存事务。
+第 7 章已经解释怎样在 Roofline 上读工作点；这里不再重推硬件参考线，只保留与当前算子直接相关的假设：Vector Add 的逻辑算术强度很低，当前大 shape 更可能先受数据搬运限制。注意用词仍是“更可能”。后文会用 Radeon RX 9070 XT 上的 GPU event 时间和受控地址实验检验它。即使逻辑有效带宽较高，也只能说明结果与访存受限假设一致；没有物理流量计数器时，不能把逻辑字节直接当成显存事务。
 
 ### 8.3.2 有效带宽怎样算
 
@@ -282,7 +282,7 @@ index = 2 × 256 + 3 = 515
 
 | 配置 | 真实 HIP 代码 | @fig-hip-coalescing 动画 |
 | ---- | ---- | ---- |
-| 执行单元 | 1 个 Wave32（32 个 lane） | 8 个 lane |
+| 执行单元 | 1 个 wave32（32 个 lane） | 8 个 lane |
 | 每 lane 处理 | 32 个元素 | 4 个元素 |
 | 一轮覆盖 | 32 × 32 = 1024 元素 | 8 × 4 = 32 元素 |
 | grid / block / 循环次数 / 逻辑字节 | 两边相同 | 两边相同 |
@@ -317,11 +317,11 @@ index = base + lane * 32 + round;
 
 这个实验要验证的不是“跨步一定慢多少”，而是：
 
-> 在当前 9070XT、当前 shape 与当前编译结果下，只改变 wave 内地址顺序，kernel 时间和 trace 是否出现可重复差异？
+> 在当前 RX 9070 XT、当前 shape 与当前编译结果下，只改变 wavefront 内地址顺序，kernel 时间和 trace 是否出现可重复差异？
 
 2026-07-19 最终 curated evidence 给出了可重复差异：连续版的三进程 median 是 `0.369584 ms`，跨步版是 `2.567170 ms`，跨步版用时约为连续版的 `6.95×`。两者的 kernel trace 都记录到相同的 `524,288` 个 work-item、workgroup size 256、VGPR 16、SGPR 128、LDS 0 Byte 和 scratch 0 Byte；grid、循环次数、算术与逻辑字节也相同。
 
-因此，当前证据支持“Wave32 同轮地址顺序显著影响这个 Vector Add”的判断。它仍没有直接数出物理显存事务，所以更严格的措辞是：**受控地址变化与约 `6.95×` 时间差同时出现，并且现有 trace 资源字段没有提供其他差异。**
+因此，当前证据支持“wave32 同轮地址顺序显著影响这个 Vector Add”的判断。它仍没有直接数出物理显存事务，所以更严格的措辞是：**受控地址变化与约 `6.95×` 时间差同时出现，并且现有 trace 资源字段没有提供其他差异。**
 
 ### 8.4.4 HIP v2：Grid-Stride Loop 让线程重复工作
 
@@ -391,7 +391,7 @@ for (std::size_t i = vector_count * 4 + thread;
 
 ### 8.4.6 HIP 路线当前能下什么结论
 
-HIP ladder 已经把三个问题拆开：v1 只控制同一轮的地址顺序，v2 改变 grid 与每线程工作方式，v3 再引入源码向量类型和尾部路径。单看代码不能给它们排快慢；统一的正确性、benchmark 和 trace 数据放在 [7.6](#_7-6-正确性、benchmark-与-profiling)，负结果与边界在 [7.8](#_7-8-负结果、适用边界与下一步) 汇总。
+HIP ladder 已经把三个问题拆开：v1 只控制同一轮的地址顺序，v2 改变 grid 与每线程工作方式，v3 再引入源码向量类型和尾部路径。单看代码不能给它们排快慢；统一的正确性、benchmark 和 trace 数据放在 [8.6](#_8-6-正确性、benchmark-与-profiling)，负结果与边界在 [8.8](#_8-8-负结果、适用边界与下一步) 汇总。
 
 完整实现位于 `code/part2-kernels/chapter8/vector_add_hip.hip`。
 
@@ -465,7 +465,7 @@ def launch(input_a, input_b, output, block_size):
 | `triton-t0` | 256 | 4 | 最小正确 baseline |
 | `triton-t1` | 1024 | 4 | 每个 program 覆盖更多元素，program 数量减少 |
 
-这里把 `num_warps` 固定为 4，是为了让 block size 成为主要变量。`num_warps` 是 Triton 的元参数，指定编译一个 program 时使用多少个 warp/wave 执行组；它大致对应 HIP 语境里“一个 block 占几个 wavefront”，但 tile 元素怎样落到 lane 与寄存器仍由编译器决定。`BLOCK_SIZE` 更大可能减少 program 数量，也可能改变资源使用与调度；在实测前不能把 t1 称为“优化版”。
+这里把 `num_warps` 固定为 4，是为了让 block size 成为主要变量。`num_warps` 是 Triton 的元参数，指定编译一个 program 时使用多少个 warp/wavefront 执行组；它大致对应 HIP 语境里“一个 block 占几个 wavefront”，但 tile 元素怎样落到 lane 与寄存器仍由编译器决定。`BLOCK_SIZE` 更大可能减少 program 数量，也可能改变资源使用与调度；在实测前不能把 t1 称为“优化版”。
 
 ### 8.5.5 用 Triton-viz 把 offsets 和 mask 展开
 
@@ -494,7 +494,7 @@ cd code/part2-kernels
 python chapter8/visualize_triton.py --size 13 --block 8 --launch
 ```
 
-浏览器打开 `http://127.0.0.1:5001` 后，Triton-viz 会通过 CPU interpreter 展开 load/store 地址，基础可视化不要求 GPU。它适合回答“访问了哪里、mask 是否挡住越界”，**不用于测量 9070XT 性能**。性能仍由原生 Ubuntu 实验机上的 GPU event 与 `rocprofv3` 负责。
+浏览器打开 `http://127.0.0.1:5001` 后，Triton-viz 会通过 CPU interpreter 展开 load/store 地址，基础可视化不要求 GPU。它适合回答“访问了哪里、mask 是否挡住越界”，**不用于测量 RX 9070 XT 性能**。性能仍由原生 Ubuntu 实验机上的 GPU event 与 `rocprofv3` 负责。
 
 可视化脚本和依赖版本以本篇锁定环境为准；本章只给出仓库中已经维护的实时启动入口，不额外提供未进入当前复跑契约的 `.tvz` 保存命令。
 
@@ -504,11 +504,11 @@ python chapter8/visualize_triton.py --size 13 --block 8 --launch
 本章配套的 Triton-viz 实时界面：拖动 program 滑块切换 program，右侧青色位置表示有效元素，灰色位置表示尾部 mask。
 :::
 
-@fig-triton-viz-live 左侧箭头定位到当前 `tl.load`，右侧青色位置表示有效元素，灰色位置表示尾部 mask。这张界面图只用于辅助读取地址与 mask，不是 9070XT 性能证据。
+@fig-triton-viz-live 左侧箭头定位到当前 `tl.load`，右侧青色位置表示有效元素，灰色位置表示尾部 mask。这张界面图只用于辅助读取地址与 mask，不是 RX 9070 XT 性能证据。
 
 ### 8.5.6 Triton 路线当前结果
 
-Triton ladder 只把 `BLOCK_SIZE` 从 256 改为 1024，并保持 `num_warps=4`。更大的 tile 同时减少 program 数并改变资源需求，所以仍要把时间范围和 trace 放在一起读。统一结果见 [7.6](#_7-6-正确性、benchmark-与-profiling)，不能只看到 program 数减少就提前宣布胜负。
+Triton ladder 只把 `BLOCK_SIZE` 从 256 改为 1024，并保持 `num_warps=4`。更大的 tile 同时减少 program 数并改变资源需求，所以仍要把时间范围和 trace 放在一起读。统一结果见 [8.6](#_8-6-正确性、benchmark-与-profiling)，不能只看到 program 数减少就提前宣布胜负。
 
 完整实现位于 `code/part2-kernels/chapter8/vector_add_triton.py`；可视化入口位于 `code/part2-kernels/chapter8/visualize_triton.py`。
 
@@ -518,7 +518,7 @@ Triton ladder 只把 `BLOCK_SIZE` 从 256 改为 1024，并保持 `num_warps=4`�
 
 ### 8.6.1 正确性矩阵
 
-发布行都经过独立进程汇总，`correct` 与 `max_abs_error` 直接来自 `summary.csv`。正式计时前，`run_all.sh` 还会检查小于 wave、block 边界、block 加一和不能被向量宽度整除的输入。
+发布行都经过独立进程汇总，`correct` 与 `max_abs_error` 直接来自 `summary.csv`。正式计时前，`run_all.sh` 还会检查小于 wavefront、block 边界、block 加一和不能被向量宽度整除的输入。
 
 | Implementation | Runtime | Shape | Block | Grid | Correct | Max abs error |
 | ---- | ---- | ----: | ----: | ----: | ---- | ----: |
@@ -732,4 +732,3 @@ output[i] = max(input_a[i] + input_b[i], 0)
 - [Triton 官方调试文档](https://triton-lang.org/main/programming-guide/chapter-3/debugging.html)：CPU interpreter 与 Triton-viz 的定位。
 - [Triton-viz 官方仓库](https://github.com/Deep-Learning-Profiling-Tools/triton-viz)：trace、可视化、profiler 与 sanitizer 的使用入口。
 - [PyTorch HIP 语义](https://docs.pytorch.org/docs/stable/notes/hip.html)：为什么 ROCm 构建继续使用 `torch.cuda` 接口名。
-- [DLog Element-Wise 教程](https://dlog.com.cn/posts/cuda05/element_wise)：本文只借鉴“先画数据移动、再进入代码”的教学节奏，图与实验均按 AMD/ROCm 语境重新制作。

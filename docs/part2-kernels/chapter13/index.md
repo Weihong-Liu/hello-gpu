@@ -43,7 +43,7 @@ y[i]        = x[i] * inv_rms * w[i]
 | ---: | ---: | --- |
 | 1 | 1 | 最小输入 |
 | 3 | 13 | mask/尾部 |
-| 33 | 257 | 跨 wave/block 边界 |
+| 33 | 257 | 跨 wavefront/block 边界 |
 | 1024 | 4096 | 教学主形状 |
 
 误差阈值不能只看一个固定常数。换成 FP16/BF16 后，应根据累加 dtype、列数和 reference 精度重新制定 `atol/rtol`。
@@ -86,7 +86,7 @@ float inverse_rms = rsqrtf(shared[0] / cols + epsilon);
   --block 256 --epsilon 1e-5
 ```
 
-这里仍有可优化空间：用 wave shuffle 收尾、一次加载后在寄存器中复用 x、向量化读写，以及为不同列数选择 block。第一版只改变“行内协作”这一项，便于和 serial 版本比较。
+这里仍有可优化空间：用 wavefront shuffle 收尾、一次加载后在寄存器中复用 x、向量化读写，以及为不同列数选择 block。第一版只改变“行内协作”这一项，便于和 serial 版本比较。
 
 ## 13.5 Triton：一行一个 program
 
@@ -169,7 +169,7 @@ rocprofv3 --kernel-trace -- \
 建议按以下顺序实验：
 
 1. HIP block 只改 `128/256/512`；
-2. 再把归约收尾替换成 wave shuffle；
+2. 再把归约收尾替换成 wavefront shuffle；
 3. 再尝试 float4 读写，并保留 scalar tail；
 4. Triton 只改 `num_warps`；
 5. 最后增加 FP16 输入、FP32 累加。
@@ -225,7 +225,7 @@ LeetGPU 或其他平台题目可以作为扩展练习，但隐藏 shape、评分
 
 ## 正式实验结果
 
-![Chapter 12 RMSNorm 性能对比](./images/rmsnorm-performance.png)
+![Chapter 13 RMSNorm 性能对比](./images/rmsnorm-performance.png)
 
 主 shape 为 `1024×4096` FP32。HIP serial 为 `1.50486 ms`，block 协作版为 `0.058440 ms`；Triton t0/t1 为 `0.033360/0.030081 ms`。串行行归约是明确负基线，而 t0/t1 的差距只适用于当前列数和资源配置。
 

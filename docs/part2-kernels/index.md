@@ -41,9 +41,9 @@ Part 2 不把“优化技巧”整理成孤立清单，而是让六章依次引�
 | ----: | ---- | ---- | ---- |
 | 1 | [第 8 章 Element-Wise：逐元素算子](./chapter8/index.md) | 输出彼此独立时，怎样划分下标、保持连续访问并处理尾部 | 完整正文与 curated evidence |
 | 2 | [第 9 章 Reduction：归约算子](./chapter9/index.md) | 多个输入共同生成较少输出时，怎样做跨线程协作 | 正文 + HIP/Triton + evidence |
-| 3 | [第 10 章 Softmax（Normalization）](./chapter10/index.md) | 怎样把数值稳定的归约与逐元素计算组合起来 | 正文 + HIP/Triton + evidence |
-| 4 | [第 11 章 GEMM-Like：矩阵乘类算子](./chapter11/index.md) | 怎样用 tile、数据复用和寄存器累加提高计算强度 | 正文 + HIP/Triton + evidence |
-| 5 | [第 12 章 Attention/Fusion](./chapter12/index.md) | 怎样在线计算并减少中间结果的全局写回 | 教学前向 + HIP/Triton + evidence |
+| 3 | [第 10 章 Normalization：归一化算子](./chapter10/index.md) | 怎样把数值稳定的归约与逐元素计算组合起来 | 正文 + HIP/Triton + evidence |
+| 4 | [第 11 章 GEMM-Like：矩阵乘类算子](./chapter11/index.md) | 怎样用 tile、数据复用和寄存器累加提高算术强度 | 正文 + HIP/Triton + evidence |
+| 5 | [第 12 章 Fusion：融合算子](./chapter12/index.md) | 怎样在线计算并减少中间结果的全局写回 | 教学前向 + HIP/Triton + evidence |
 | 6 | [第 13 章 综合实战：Fused RMSNorm](./chapter13/index.md) | 怎样综合逐元素、归约与融合，独立完成完整优化闭环 | 正文 + HIP/Triton + evidence |
 
 第 13 章不是突然出现的新技巧，而是一次结业题：数学语义来自 RMSNorm，数据依赖复用 Reduction，融合边界复用 Softmax 与 Attention/Fusion，实验记录则沿用前五章的统一契约。
@@ -54,7 +54,7 @@ Part 2 不把“优化技巧”整理成孤立清单，而是让六章依次引�
 
 | 路线 | 源码首先看见什么 | 适合重点观察什么 | 阅读方式 |
 | ---- | ---- | ---- | ---- |
-| HIP | thread、block、标量下标、显式加载类型 | 地址排列、wave/LDS、资源用量与底层控制 | 想理解硬件映射时优先 |
+| HIP | thread、block、标量下标、显式加载类型 | 地址排列、wavefront/LDS、资源用量与底层控制 | 想理解硬件映射时优先 |
 | Triton | program、tile offsets、mask、meta-parameter | 快速表达分块、参数实验与编译器生成映射 | 想快速验证算子设计时优先 |
 
 可以只先走一条路线，但不要跳过公共部分：数学语义、正确性矩阵、计时范围与证据口径必须相同。做对照时也不预设谁是赢家；同一实现换一个 shape、dtype、编译器版本或系统状态，结论都可能变化。
