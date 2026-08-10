@@ -158,7 +158,7 @@ _vadd_kernel[grid](..., block_size, num_warps=32)
 
 ![接受与拒绝状态分布](./images/status_breakdown.png)
 
-10 轮评估中：**accepted = 5**，**below_threshold = 5**，无 `compile_error`（与另一次含编译失败的搜索不同）。
+10 轮评估中：**接受 = 5**，**未达阈值 = 5**，无编译失败（与另一次含编译失败的搜索不同）。
 
 ## 6. 工具调用与指标的对应关系
 

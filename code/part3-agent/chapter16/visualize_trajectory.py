@@ -187,23 +187,66 @@ def render_visualizations(
     plt.close(fig)
     saved.append(p1)
 
-    # ── 2) 状态分布 ──────────────────────────────────────────────
+    # ── 2) 状态分布（饼图 + 条形，中文标签）────────────────────────
     from collections import Counter
 
+    status_labels_zh = {
+        "accepted": "接受",
+        "below_threshold": "未达阈值",
+        "compile_error": "编译失败",
+        "rejected": "拒绝",
+        "unknown": "未知",
+    }
+    status_order = ["accepted", "below_threshold", "compile_error", "rejected", "unknown"]
     counts = Counter(statuses)
-    fig, ax = plt.subplots(figsize=(7, 4.5))
-    labels = list(counts.keys())
-    values = [counts[k] for k in labels]
-    bar_colors = [color_map.get(k, "#1f77b4") for k in labels]
-    bars = ax.bar(labels, values, color=bar_colors)
-    ax.set_title(f"{title}\nstatus breakdown (n={len(rows)})")
-    ax.set_ylabel("count")
+    ordered = [k for k in status_order if counts.get(k, 0) > 0]
+    ordered += [k for k in counts if k not in ordered]
+    labels_zh = [status_labels_zh.get(k, k) for k in ordered]
+    values = [counts[k] for k in ordered]
+    bar_colors = [color_map.get(k, "#1f77b4") for k in ordered]
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.8))
+    fig.suptitle(f"{title}\n状态分布（n={len(rows)}）", fontsize=13, fontweight="bold")
+
+    # 饼图
+    ax_pie = axes[0]
+    wedges, texts, autotexts = ax_pie.pie(
+        values,
+        labels=labels_zh,
+        colors=bar_colors,
+        autopct=lambda pct: f"{pct:.0f}%\n({int(round(pct / 100.0 * len(rows)))})",
+        startangle=90,
+        pctdistance=0.65,
+        wedgeprops={"linewidth": 1.0, "edgecolor": "white"},
+    )
+    for t in texts:
+        t.set_fontsize(10)
+    for t in autotexts:
+        t.set_fontsize(9)
+        t.set_color("#222222")
+    ax_pie.set_title("占比", fontsize=11)
+
+    # 条形图
+    ax_bar = axes[1]
+    bars = ax_bar.bar(labels_zh, values, color=bar_colors, width=0.55)
+    ax_bar.set_ylabel("次数")
+    ax_bar.set_title("计数", fontsize=11)
+    ax_bar.set_ylim(0, max(values) * 1.25 if values else 1)
     for bar, val in zip(bars, values):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.05, str(val), ha="center", va="bottom")
-    ax.grid(True, axis="y", alpha=0.25)
+        ax_bar.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + 0.08,
+            str(val),
+            ha="center",
+            va="bottom",
+            fontsize=11,
+            fontweight="bold",
+        )
+    ax_bar.grid(True, axis="y", alpha=0.25)
+
     fig.tight_layout()
     p2 = out_dir / "status_breakdown.png"
-    fig.savefig(p2, dpi=150)
+    fig.savefig(p2, dpi=150, bbox_inches="tight")
     plt.close(fig)
     saved.append(p2)
 

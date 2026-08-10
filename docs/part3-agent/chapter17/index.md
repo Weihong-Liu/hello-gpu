@@ -148,7 +148,7 @@ task-20260806-144647/
 
 ![接受与拒绝状态分布](./images/status_breakdown.png)
 
-10 轮：**accepted = 5**，**below_threshold = 5**，本轮无 `compile_error`。
+10 轮：**接受 = 5**，**未达阈值 = 5**，本轮无编译失败。
 
 最终 `best.py` 要点：
 
