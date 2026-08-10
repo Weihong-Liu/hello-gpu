@@ -9,16 +9,53 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PART_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-if [[ ! -f "${PART_DIR}/activate-rocm.sh" ]]; then
-    echo "missing ${PART_DIR}/activate-rocm.sh" >&2
-    exit 1
+requested_gpu_arch="${GPU_ARCH:-}"
+requested_hello_gpu_arch="${HELLO_GPU_ARCH:-}"
+if [[ "${HELLO_GPU_SKIP_ACTIVATE:-0}" == "1" ]]; then
+    command -v hipcc >/dev/null 2>&1 || { echo "HELLO_GPU_SKIP_ACTIVATE=1 requires hipcc on PATH" >&2; exit 1; }
+    command -v python >/dev/null 2>&1 || { echo "HELLO_GPU_SKIP_ACTIVATE=1 requires python on PATH" >&2; exit 1; }
+else
+    if [[ ! -f "${PART_DIR}/activate-rocm.sh" ]]; then
+        echo "missing ${PART_DIR}/activate-rocm.sh" >&2
+        exit 1
+    fi
+    # shellcheck source=/dev/null
+    source "${PART_DIR}/activate-rocm.sh"
 fi
-# shellcheck source=/dev/null
-source "${PART_DIR}/activate-rocm.sh"
+
+if [[ -n "${requested_gpu_arch}" && -n "${requested_hello_gpu_arch}" && "${requested_gpu_arch}" != "${requested_hello_gpu_arch}" ]]; then
+    echo "GPU_ARCH (${requested_gpu_arch}) and HELLO_GPU_ARCH (${requested_hello_gpu_arch}) must match" >&2
+    exit 2
+fi
+if [[ -n "${requested_gpu_arch}" ]]; then
+    GPU_ARCH="${requested_gpu_arch}"
+elif [[ -n "${requested_hello_gpu_arch}" ]]; then
+    GPU_ARCH="${requested_hello_gpu_arch}"
+else
+    if ! rocminfo_output="$(rocminfo)"; then
+        echo "rocminfo failed; set GPU_ARCH or HELLO_GPU_ARCH explicitly" >&2
+        exit 1
+    fi
+    mapfile -t detected_arches < <(printf '%s\n' "${rocminfo_output}" | sed -nE 's/^[[:space:]]*Name:[[:space:]]*(gfx[0-9]+)[[:space:]]*$/\1/p' | sort -u)
+    if (( ${#detected_arches[@]} != 1 )); then
+        echo "rocminfo must contain exactly one unique Name: gfx...; found ${detected_arches[*]:-none}" >&2
+        exit 1
+    fi
+    GPU_ARCH="${detected_arches[0]}"
+fi
+case "${GPU_ARCH}" in
+    gfx1100|gfx1151|gfx1201) ;;
+    *)
+        echo "GPU_ARCH/HELLO_GPU_ARCH must resolve to gfx1100, gfx1151, or gfx1201; got ${GPU_ARCH}" >&2
+        exit 2
+        ;;
+esac
+HELLO_GPU_ARCH="${GPU_ARCH}"
+export GPU_ARCH HELLO_GPU_ARCH
+
 SOURCE_SHA256="$(python "${SCRIPT_DIR}/summarize_results.py" --chapter-dir "${SCRIPT_DIR}" --print-source-sha256)"
 LOG_DIR="${SCRIPT_DIR}/logs"
 PROFILE_DIR="${SCRIPT_DIR}/profiles"
-GPU_ARCH="${GPU_ARCH:-gfx1201}"
 SIZE="${SIZE:-16777216}"
 HIP_BLOCK="${HIP_BLOCK:-256}"
 TRITON_BLOCK="${TRITON_BLOCK:-1024}"
