@@ -262,7 +262,7 @@ export const parts = [
       {
         title: 'Agent 入门',
         summary: '参考 hello-agents、LLM Agent 基本范式、工具调用',
-        status: '🚧',
+        status: '✅',
         lead: '本章是 Agent 篇的入口，参考 hello-agents 的概念铺垫节奏，讲清楚 LLM Agent 的基本范式。但本书的 Agent 场景是「算子/模型优化」，不是通用智能体——这是和 hello-agents 的关键区别。',
         sections: [
           ['什么是 LLM Agent', '用最简模型理解 Agent = LLM + 工具 + 循环，参考 hello-agents 第 1 章。'],
@@ -275,43 +275,43 @@ export const parts = [
       },
       {
         title: '工具封装',
-        summary: 'benchmark/profiling/编译包成 Agent 可调用工具',
-        status: '🚧',
+        summary: 'compile/bench/profile 三件套 + accept_candidate',
+        status: '✅',
         lead: '本章把 Part 1 学过的 benchmark、rocprof 以及编译流程，封装成 Agent 能调用的标准化工具。这是让 Agent「能动手」的前提——没有工具的 Agent 只会空谈。',
         sections: [
-          ['为什么要封装工具', '说明 Agent 不能直接操作 shell，需要结构化、可解析的工具接口。'],
-          ['封装 benchmark 工具', '把 Part 1 的计时脚本包成输入 kernel → 输出延迟/带宽的标准化工具。'],
-          ['封装 profiling 工具', '把 rocprof 包成输入 kernel → 输出瓶颈信号的标准化工具。'],
-          ['封装编译工具', '把 hipcc/triton 编译流程包成输入代码 → 输出编译成功/失败的标准化工具。'],
-          ['工具的输入输出 schema', '用 JSON schema 定义每个工具的接口，让 Agent 能正确调用。'],
-          ['错误处理与重试', '说明工具失败时如何把错误信息回传给 Agent 触发反思。']
+          ['为什么要封装工具', '说明 Agent 不能直接操作 shell，需要结构化、可解析、分层的工具接口。'],
+          ['封装 benchmark 工具', '把 Part 1 的计时脚本包成 bench_kernel：输入 kernel → 输出 mean/median/p95/带宽。'],
+          ['封装 profiling 工具', '把 Roofline/rocprof 包成 profile_kernel：输入 kernel → 输出瓶颈信号。'],
+          ['封装编译工具', '把 Triton JIT/正确性包成 compile_kernel：输入代码 → 按行错误列表。'],
+          ['工具的输入输出 schema', '用 JSON schema 定义三件套与 accept_candidate，共享 task contract。'],
+          ['错误处理与重试', '工具失败不算任务失败：结构化错误回流，拒绝时不覆盖 best。']
         ]
       },
       {
         title: '算子优化 Agent 设计',
-        summary: '读题→生成 kernel→跑分→反思迭代',
-        status: '🚧',
+        summary: '读题→compile/bench/profile→accept 迭代',
+        status: '✅',
         lead: '本章把前面封装的工具组装成一个完整的算子优化 Agent。读完后，你应该能理解 Agent 如何从一道算子题目出发，自动生成 kernel、跑 benchmark、根据结果反思改写。',
         sections: [
-          ['Agent 的整体架构', '画出 读题 → 生成 → 编译 → 跑分 → 反思 的循环架构图。'],
-          ['读题与问题理解', '让 Agent 解析题目规格（输入形状、数据类型、期望性能）。'],
+          ['Agent 的整体架构', '画出 读题 → 生成 → compile → bench → profile → accept → 反思 的循环架构图。'],
+          ['读题与问题理解', '让 Agent 解析题目规格（输入形状、数据类型、期望性能）并建成 task contract。'],
           ['生成初始 kernel', '让 Agent 根据题目生成第一版 naive kernel 作为 baseline。'],
-          ['跑分与性能反馈', '调用 benchmark 工具拿到延迟/带宽，转成 Agent 能理解的反馈。'],
+          ['跑分与性能反馈', '调用三件套拿到延迟/带宽/瓶颈，再经 accept_candidate 配对裁决。'],
           ['反思与改写', '让 Agent 根据 profiling 信号（访存瓶颈？计算瓶颈？）决定下一步优化方向。'],
           ['迭代终止条件', '说明什么时候停（达到目标性能、迭代轮次上限、连续无提升）。']
         ]
       },
       {
         title: '多轮优化实战',
-        summary: 'Agent 把 naive kernel 优化 3-5x、失败回退、对比报告',
-        status: '🚧',
-        lead: '本章是 Agent 算子层篇的高潮：让 Agent 对一个 naive kernel 跑完整的多轮优化，观察它如何从慢版本一步步优化到 3-5 倍。重点是看 Agent 的行为轨迹，以及失败时如何回退。',
+        summary: 'vector_add 真实轨迹 ≈2.19×、失败回退、对比报告',
+        status: '✅',
+        lead: '本章是 Agent 算子层篇的高潮：在本机跑通完整多轮优化，用真实轨迹与可视化观察提升曲线与失败回退。教程 3–5× 叙事留给高头寸算子；vector_add 用来证明闭环可信。',
         sections: [
-          ['选一个教学算子', '挑一个优化空间大的算子（如 reduction 或 matmul naive 版）作为 Agent 的优化对象。'],
-          ['记录每轮优化的轨迹', '把 Agent 每轮的生成代码、benchmark 结果、反思内容完整落盘。'],
-          ['观察性能提升曲线', '画出 Agent 多轮优化的性能变化，理解哪几轮提升最大、为什么。'],
-          ['失败回退机制', '当某轮优化反而变慢或编译失败时，Agent 如何识别并回退到上一版。'],
-          ['和人工优化的对比', '把 Agent 优化结果和人工优化的版本对比，讨论 Agent 的优势与局限。'],
+          ['选一个教学算子', '默认 vector_add fixtures 验收闭环；高头寸算子冲击 3–5×。'],
+          ['记录每轮优化的轨迹', '把 Agent 每轮的生成代码、benchmark 结果、反思内容完整落盘到 trajectory.jsonl。'],
+          ['观察性能提升曲线', '嵌入真实跑数与可视化：0.705→0.322 ms（≈2.19×）。'],
+          ['失败回退机制', '当某轮优化反而变慢或编译失败时，不更新 best，失败照样留痕。'],
+          ['和人工优化的对比', '讨论 Agent 擅长执行与留痕、关键结构洞察仍常需人机协作。'],
           ['生成对比报告', '输出一份包含轨迹、性能曲线、关键决策的优化报告。']
         ]
       }

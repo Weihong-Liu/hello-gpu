@@ -1,151 +1,166 @@
 ---
 title: "第16章 算子优化 Agent 设计"
-description: "Hello GPU 第16章 · 读题→生成 kernel→跑分→反思迭代"
+description: "Hello GPU 第16章 · 读题→compile/bench/profile→accept 迭代"
 ---
 
 # 第16章 算子优化 Agent 设计
 
 ## 本章目标、前置知识与产物
 
-> 本章把前面封装的工具组装成一个完整的算子优化 Agent。读完后，你应该能理解 Agent 如何从一道算子题目出发，自动生成 kernel、跑 benchmark、根据结果反思改写。
+本章把第 14 章的循环骨架和第 15 章的权威工具，组装成一个完整的**算子优化 Agent**。流程不是写死的流水线，而是由 LLM 多轮驱动；真假仍由工具锁死。
 
-第 15 章我们有了工具：编译、benchmark、profiling 各自有结构化接口。本章把这些工具组装成一个循环——**读题 → 生成 → 编译验证 → 跑分 → 反思 → 再生成**。这个循环本身不是新发明，它的成熟形态叫 KDA（Kernel Design Agents），一套为「证据驱动的 kernel 开发」设计的可重复流程。
+> 结构对齐：对应线上 [第16章 算子优化 Agent 设计](https://datawhalechina.github.io/hello-gpu/part3-agent/chapter16/)；线上以 FA Decode / KDA 叙事贯穿，本地以本仓库 Reflection Agent + `vector_add` fixtures 落地。
 
-读完后你应该能画出这个循环的架构，能解释每一步的输入输出，并能指出：如果某一步缺失或反馈模糊，整个循环会在哪里退化。本章用一个真实任务的完整过程贯穿始终——FA Decode（单 token Flash Attention），它是第 17 章多轮优化实战的主角。
+学完本章，你应该能够：
 
-::: warning 平台说明
-本章使用的实验记录来自 RTX 3080（SM86）/ RX 7900 XTX（gfx1100）上的真实跑数。方法本身与硬件无关：书基线 RX 9070 XT 上同样的流程可以复现，只是数字会变。
-:::
+- 画出「读题 → 生成 → compile → bench → profile → accept → 反思」的循环；
+- 指出每一步在源码中的落点；
+- 解释为什么晋升必须有配对证据，而不是模型自评。
+
+对应代码：
+
+```text
+code/part3-agent/
+├── kernel_optimize/
+│   ├── agent.py       # ReAct 主循环
+│   ├── tools.py       # 三件套 + accept_candidate
+│   ├── intake.py      # 从原始 kernel 建 task
+│   ├── measure.py     # 峰值 + profile 载荷
+│   ├── prompts.py     # SYSTEM_SOP
+│   └── __main__.py    # 对话式 / --batch
+├── skills/rocm-kernel-optimize/
+└── chapter15/fixtures/   # 第 17 章实战入口
+```
 
 ## 16.1 Agent 的整体架构
 
-一个算子优化 Agent 的最简循环只有六步：
+最简循环六步：
 
 ```text
-读题 → 生成 → 编译+验证 → 跑分 → 反思 → 生成 ...
-                      ↑                    │
-                      └──── 失败也回到这里 ┘
+读题 → 生成 → compile_kernel → bench_kernel → profile_kernel → accept_candidate
+         ↑                         失败也回到生成 ←──────────────┘
 ```
 
-每一步都是明确的输入输出转换：
+```mermaid
+flowchart LR
+  U[用户 / fixtures] --> I[读题与建任务]
+  I --> P[measure_peak + profile_kernel]
+  P --> G[LLM 生成候选]
+  G --> C[compile_kernel]
+  C --> B[bench_kernel]
+  B --> Pr[profile_kernel]
+  Pr --> A[accept_candidate]
+  A -->|接受| Best[更新 best.py]
+  A -->|拒绝| R[读错因 / 换机制]
+  Best --> G
+  R --> G
+  G --> T{终止?}
+  T -->|否| G
+  T -->|是| Rep[报告 + 确定性汇总]
+```
 
 | 步骤 | 输入 | 输出 |
 |---|---|---|
-| 读题 | task contract（JSON） | 对任务的内部理解（draft） |
-| 生成 | draft + 当前最优实现 + 反馈 | 新候选 kernel 源码 |
-| 编译+验证 | 源码 | 编译结果 + 正确性判定 |
-| 跑分 | 编译产物 | 性能统计（median/p95/带宽） |
-| 反思 | 全部反馈 | 下一轮的行动决策 |
+| 读题 | task.json / fixtures | 可检查的合同理解 |
+| 生成 | 合同 + best + 反馈 | 新候选源码 |
+| compile | 源码 | `{ok, stage, errors}` |
+| bench | 源码 | median/p95/带宽/算力 |
+| profile | 源码 | bottleneck / AI / bound |
+| accept | 源码 + change | accepted + 轨迹行 |
 
-KDA 把它扩展为带文档的九步循环（[延伸阅读](https://github.com/mit-han-lab/kernel-design-agents)）：
+设计原则：
 
-1. 定义任务契约（task contract）；
-2. 让 Agent 检查本地工作区；
-3. 让 Agent 写 `docs/draft.md`（设计草案）；
-4. 把草案转成可执行的计划 `docs/plan.md`；
-5. 实现第一个候选；
-6. 验证正确性；
-7. 测量目标指标；
-8. 记录证据，决定保留 / 修改 / 拒绝该候选；
-9. 重复直到满足晋升条件，或剩余阻塞明确。
-
-注意第 8 步是决策点，不是自动通过：**每一步都必须留下证据，晋升必须有数据支撑**。这正是 Part 1 强调的「不能凭感觉优化」在自动化场景的延续——Agent 每轮改动都必须对应到可复查的数字。
+1. **工具结果就是事实**——LLM 不自报加速比；
+2. **确定性代码掌权，LLM 受控提议**；
+3. **分步三件套**对齐线上；**唯一晋升入口** `accept_candidate`。
 
 ## 16.2 读题与问题理解
 
-题目是一份 task contract（第 15 章定义过格式）。Agent 读题后要做两件事：
+1. **对话式 intake**（`python -m kernel_optimize`）  
+   `ask_user` 收集 kernel / shape / dtype → `get_environment` → 必要时 `convert_kernel` → `setup_task`。
 
-1. **把规格转成可检查的条件**。例如 FA Decode 契约里的正确性要求「与 `torch.einsum` 参考比较，atol=1e-2」——Agent 要把它变成测试脚本里的具体断言，而不是记在脑子里。
-2. **把性能目标量化**。契约写的是「N=2048 时 ≥3.0x，N=4096 时 ≥4.0x，N=8192 时 ≥5.0x」——Agent 要确认这个目标和 naive 参考是同一个口径（同一个输入、同一个计时方式）。
+2. **非交互 batch**（第 17 章主路径）  
+   预置 fixtures，跳过提问，直接优化。
 
-这一步最容易犯的错误是**题目理解不一致**：Agent 以为自己在优化「单 token 流式解码」，但实现里混进了 batch 维度；或者正确性口径和参考实现不一致，后面每轮都要返工。所以 KDA 的第一步是让 Agent「检查本地工作区」——读参考实现、读测试脚本，再写 draft，而不是直接开写 kernel。
+读题后要做两件事：
 
-好的 draft 应该包含：算法选择（为什么用 online softmax 而不是物化）、关键数据结构（Q/K/V 的形状与布局）、并行划分（grid 怎么设）、已知风险（哪些地方可能出错）。这份 draft 是人检查 Agent 理解是否正确的唯一窗口。
+1. 把规格变成可检查条件（reference、atol/rtol、入口签名）；
+2. 把性能目标量化（相对 baseline 的改进阈值，或绝对延迟）。
+
+合同字段：入口签名、`shape`、`tensors` / `launchArguments`、正确性容差、benchmark 参数、`optimization.minImprovementFraction`。
 
 ## 16.3 生成初始 kernel
 
-第一版 kernel 的目标只有一个：**正确**。它不追求快，甚至不追求优雅，但要严格满足契约的正确性条件，成为之后所有比较的基线。
+第一版目标只有一个：**正确**。它不追求快，但要成为之后所有比较的基线。
 
-看 FA Decode 真实实验的第一版（简化示意）：
+- baseline：用户粘贴，或 fixtures 里故意偏小 `block_size` 的朴素实现；
+- 候选：LLM 根据 `profile_kernel` 与 `read_reference("optimization-patterns")`，一次改**一个主要机制**；
+- 非 Triton：先 `convert_kernel`，再进入 compile / bench / accept。
 
-```python
-# baseline：每个 head 一个 block，grid = H = 32
-@triton.jit
-def fa_decode_baseline(Q, K, V, O, N, H, D, BLOCK_N: tl.constexpr):
-    pid = tl.program_id(0)          # head 索引
-    q = tl.load(Q + pid * D + tl.arange(0, D))   # (D,)
-    m_i = tl.full([BLOCK_N], -float("inf"), tl.float32)
-    l_i = tl.zeros([BLOCK_N], tl.float32)
-    acc = tl.zeros([BLOCK_N, D], tl.float32)
-    # 沿 N 分块，online softmax 累加
-    ...
-```
-
-这个 baseline 能跑、能通过正确性测试，但性能只有 naive PyTorch 的 **1.83x**——离 3.0x 目标差得远。没关系，它就是起点。真实实验中，第一版候选的性能轨迹是：
-
-```text
-v0 baseline:        1.83x   ← 正确但慢
-```
-
-后续每一轮优化都从「上一版最优」出发，而不是从零重写——这个「当前最优」就是 Agent 的短期记忆。
+第 16 章 `vector_add` fixtures 的 baseline 使用 `block_size=256`、未设 `num_warps`——给 Agent 留出「减 grid 启动开销 / 提高并行度」的可搜索头寸。
 
 ## 16.4 跑分与性能反馈
 
-跑分工具返回的是结构化统计（第 15 章）。Agent 拿到后要做两件事：
+每一轮标准动作：
 
-1. **和契约目标比**：1.83x vs 3.0x，差多少；
-2. **和上一轮比**：这轮是提升、回退、还是噪声？如果提升幅度小于 std，视为没有变化。
+1. `compile_kernel(source)` — 不过则修源码；
+2. `bench_kernel(source)` — 看 mean/median/p95/带宽/算力；
+3. `profile_kernel(source)` — 首轮与换机制时必须；
+4. `accept_candidate(source, change)` — 配对裁决；接受则覆盖 `best.py`；无论成败追加 `trajectory.jsonl`。
 
-真实实验里反馈循环是这样走的（数字为 N=8192 口径；三个 N 的最终结果见第 17.3 节）：
+拿到数字后要分层比较：
 
-```text
-v1: BLOCK_N=128, num_warps=2     → 3.4x   （从 1.83x 提升）
-v2: 合并 K/V 加载                → 4.35x  （继续提升）
-v3: split-KV, num_splits=4       → 5.26x  （达到 5.0x 目标）
-```
+1. 和合同目标比（是否值得继续）；
+2. 和上一版 incumbent 比（提升 / 回退 / 噪声）；
+3. 改进幅度小于阈值 → 视为无变化（`below_threshold`）。
 
-每个数字后面都应该跟一句「为什么」——这个解释由 Agent 结合 profiling 信号产生，是反思步骤的输入。
+辅助：`measure_peak` 给 Roofline 天花板；单独 `bench_kernel` 可摸底，但晋升仍以 `accept_candidate` 为准。
 
 ## 16.5 反思与改写
 
-反思的质量决定 Agent 的上限。一次好的反思包含三个层次：
+一次好的反思包含三个层次：
 
 1. **现象**：数字是多少，对比目标差多少；
-2. **原因**：profiling 信号说了什么——访存受限？占用率不足？启动开销？
+2. **原因**：profiling 说了什么——访存受限？占用不足？启动开销？
 3. **行动**：下一步改什么，预期是什么。
 
-看 FA Decode 实验里最有价值的一次反思。v1 到 3.4x 后 profiling 显示：**grid=32（每 head 一个 block）只填了 GPU 一半的 SM**，占用率约 47%（N=8192 口径）。这轮的方向由人提出——「不是访存不够快，是并行度不够，把 N 维切分」——Agent 负责把它变成实现并验证：
+映射到工具观察：
 
-> 把 N 维切分（split-KV），每个 block 只处理一部分 KV cache，grid 变成 H × num_splits = 128，把 68 个 SM 填满。
+- 读 `compile_kernel` 的 `errors[]` → 修语法；
+- 读 `accept_candidate` 的 `below_threshold` → 换方向；
+- 读 `profile_kernel` 的 `bottleneck` → memory-bound 减搬运/减启动，compute-bound 减运算。
 
-于是有了 v3：split-KV + 轻量归约 kernel，把 partial 结果用 online softmax 公式合并。这一步把 4.35x 推到 5.26x（N=8192）。注意这里的分工：**关键方向来自人，Agent 完成实现、跑分和留痕**——第 17.5 节的对照实验会给出这样分工的原因。
+完成护栏：没进入闭环（未调用 compile/bench/accept）就输出最终文本，会被 nudge 回来。
 
-这条反思链的形态仍然成立：**每个行动都绑定了 profiling 证据**。没有 profiling 信号时，Agent 的修改就是随机尝试——第 17.5 节会看到，fused MLP 对照组里 Agent 的「创造性方案」三轮全部失败，原因就是没有证据支撑。
-
-反思还有一个容易被忽略的动作：**承认某个方向走不通**。后面会看到 v4 尝试用 `tl.dot`（张量核）加速 M=1 场景，反而更慢——记录「为什么慢」和记录「怎么变快」同样有价值。
+还要会**承认方向走不通**：第 16 章 R5 把 `block_size` 推到 8192 反而大幅变慢，Agent 拒绝后回到 4096 路线——失败记录与成功同等重要。
 
 ## 16.6 迭代终止条件
 
-循环不能无限跑。三个终止条件，按优先级：
+| 条件 | 行为 |
+|---|---|
+| 模型不再调工具，且已进入过闭环 | 输出最终中文报告 |
+| `max_steps` 触顶 | 返回步数上限提示，仍打印确定性汇总 |
+| patience / 连续无提升 | SOP 引导主动收尾 |
+| 阻塞显式化 | 剩余问题不再是「优化」（环境/规格做不到） |
 
-1. **达成晋升条件**：契约写明的目标全部满足（FA Decode 的三个 N 值分别达到 3x/4x/5x）；
-2. **连续无提升**：连续 N 轮性能没有超过噪声区间，或 profiling 显示已接近硬件极限（例如带宽利用率 >90%）；
-3. **阻塞显式化**：剩余问题不再是「优化」，而是「做不到」（例如 16GB 显存装不下模型）。
+入口结束后打印基于 `trajectory.jsonl` 的确定性汇总——报告的账本是轨迹，不是模型口头数字。
 
-真实实验里「连续无提升」的判定：3 轮没有超过上一版最优，就停下来写报告，而不是无限尝试。这和人工优化的习惯一致——优化是有回报递减的，知道什么时候停，本身就是一种能力。
+```bash
+cd code/part3-agent
+uv sync && source ./activate-rocm.sh
+uv run python -m kernel_optimize
+uv run python -m kernel_optimize --batch chapter15/fixtures/vector_add
+```
 
 ## 本章小结
 
-- Agent 优化循环 = 读题 → 生成 → 编译验证 → 跑分 → 反思，每一步都有明确输入输出。
-- KDA 工作流把循环固化成九步，核心是「每步留证据、晋升靠数据」。
-- 读题要产出可检查的条件：正确性断言、量化目标、和参考实现同口径。
-- 第一版 kernel 只求正确，作为所有比较的基线。
-- 跑分反馈要分层：与目标比、与上一轮比、区分真实变化和噪声。
-- 反思三层次：现象 → 原因（profiling 证据）→ 行动；没有证据的修改是随机尝试。
-- 终止条件：达成目标 / 连续无提升 / 阻塞显式化。
+- 算子优化 Agent = 短主循环 + 线上对齐三件套 + `accept_candidate` + SOP。
+- 读题 → 测峰值/profiling → 生成 → compile/bench/profile → accept → 反思。
+- 数字永不口算；晋升只认配对证据；终止条件要显式。
 
 ## 延伸阅读
 
-- [kernel-design-agents (MIT HAN Lab)](https://github.com/mit-han-lab/kernel-design-agents) — KDA 九步循环与 KernelWiki
-- [第 5 章 benchmark 与可信计时](../../part1-profiling/chapter5/index.md) — 反馈统计的口径依据
-- [第 6 章 用 rocprof 找到慢在哪里](../../part1-profiling/chapter6/index.md) — 反思环节 profiling 信号的来源
+- `code/part3-agent/REFACTOR-PLAN-v2.md`
+- `code/part3-agent/skills/rocm-kernel-optimize/SKILL.md`
+- 下一章：多轮实战与可视化报告
+- 线上对照：[第16章 算子优化 Agent 设计](https://datawhalechina.github.io/hello-gpu/part3-agent/chapter16/)

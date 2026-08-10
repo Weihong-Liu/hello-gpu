@@ -39,6 +39,19 @@ fi
 if [[ -d "${ROCM_PATH}/bin" ]]; then
     export PATH="${ROCM_PATH}/bin:${PATH}"
 fi
+# Arch-specific libraries (e.g. _rocm_sdk_libraries_gfx1151) must precede devel.
+ROCM_LIBRARIES_ROOT="$(find "${ROCM_VENV}/lib" -type d -name '_rocm_sdk_libraries_*' -print -quit 2>/dev/null || true)"
+if [[ -n "${ROCM_LIBRARIES_ROOT}" && -d "${ROCM_LIBRARIES_ROOT}/lib" ]]; then
+    export LD_LIBRARY_PATH="${ROCM_LIBRARIES_ROOT}/lib:${LD_LIBRARY_PATH:-}"
+fi
+ROCM_CORE_ROOT="$(find "${ROCM_VENV}/lib" -type d -name _rocm_sdk_core -print -quit 2>/dev/null || true)"
+if [[ -n "${ROCM_CORE_ROOT}" ]]; then
+    for sub in lib lib/rocm_sysdeps/lib lib/host-math/lib; do
+        if [[ -d "${ROCM_CORE_ROOT}/${sub}" ]]; then
+            export LD_LIBRARY_PATH="${ROCM_CORE_ROOT}/${sub}:${LD_LIBRARY_PATH:-}"
+        fi
+    done
+fi
 if [[ -d "${ROCM_PATH}/lib" ]]; then
     export LD_LIBRARY_PATH="${ROCM_PATH}/lib:${LD_LIBRARY_PATH:-}"
 fi
