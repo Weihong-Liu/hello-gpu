@@ -9,8 +9,6 @@ description: "Hello GPU 第15章 · compile/bench/profile 三件套 + accept_can
 
 本章把 Part 1 建立的计时习惯、正确性检查和 profiling 直觉，收成 **Agent 可调用、返回可解析** 的标准化工具。这是让 Agent「能动手」的前提——没有工具的 Agent 只会空谈。
 
-> 结构对齐：对应线上 [第15章 工具封装](https://datawhalechina.github.io/hello-gpu/part3-agent/chapter15/)；工具名与线上一致（`compile_kernel` / `bench_kernel` / `profile_kernel`），晋升入口为本地增补的 `accept_candidate`。
-
 学完本章，你应该能够：
 
 - 解释为什么 Agent 优化 kernel 必须依赖结构化工具接口；
@@ -176,7 +174,7 @@ bash chapter14/run_cases.sh
 ## 本章小结
 
 - Agent 优化 kernel 的前提是结构化工具：编译、benchmark、profiling 各有明确输入输出。
-- 对外三件套对齐线上：`compile_kernel` / `bench_kernel` / `profile_kernel`；晋升靠 `accept_candidate`。
+- 对外三件套：`compile_kernel` / `bench_kernel` / `profile_kernel`；晋升靠 `accept_candidate`。
 - 错误处理原则：结构化错误 → 反思 → 重试；失败留痕，best 不被坏候选覆盖。
 
 ## 延伸阅读
@@ -184,4 +182,3 @@ bash chapter14/run_cases.sh
 - `code/part3-agent/chapter14/EXPERIMENT.md`
 - `code/part3-agent/kernel_optimize/tools.py`
 - Part 1 计时与 Roofline 章节
-- 线上对照：[第15章 工具封装](https://datawhalechina.github.io/hello-gpu/part3-agent/chapter15/)

@@ -9,8 +9,6 @@ description: "Hello GPU 第16章 · 读题→compile/bench/profile→accept 迭�
 
 本章把第 14 章的循环骨架和第 15 章的权威工具，组装成一个完整的**算子优化 Agent**。流程不是写死的流水线，而是由 LLM 多轮驱动；真假仍由工具锁死。
 
-> 结构对齐：对应线上 [第16章 算子优化 Agent 设计](https://datawhalechina.github.io/hello-gpu/part3-agent/chapter16/)；线上以 FA Decode / KDA 叙事贯穿，本地以本仓库 Reflection Agent + `vector_add` fixtures 落地。
-
 学完本章，你应该能够：
 
 - 画出「读题 → 生成 → compile → bench → profile → accept → 反思」的循环；
@@ -72,7 +70,7 @@ flowchart LR
 
 1. **工具结果就是事实**——LLM 不自报加速比；
 2. **确定性代码掌权，LLM 受控提议**；
-3. **分步三件套**对齐线上；**唯一晋升入口** `accept_candidate`。
+3. **分步三件套**；**唯一晋升入口** `accept_candidate`。
 
 ## 16.2 读题与问题理解
 
@@ -163,4 +161,3 @@ uv run python -m kernel_optimize --batch chapter15/fixtures/vector_add
 - `code/part3-agent/REFACTOR-PLAN-v2.md`
 - `code/part3-agent/skills/rocm-kernel-optimize/SKILL.md`
 - 下一章：多轮实战与可视化报告
-- 线上对照：[第16章 算子优化 Agent 设计](https://datawhalechina.github.io/hello-gpu/part3-agent/chapter16/)

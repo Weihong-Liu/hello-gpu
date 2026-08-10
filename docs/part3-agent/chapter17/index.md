@@ -9,7 +9,7 @@ description: "Hello GPU 第17章 · vector_add 真实轨迹 ≈2.19×、失败�
 
 本章是算子 Agent 篇的高潮：把第 15 章的工具与第 16 章的循环放在一起，跑一次完整多轮优化，然后——**如实展示结果**。
 
-> 结构对齐：对应线上 [第17章 多轮优化实战](https://datawhalechina.github.io/hello-gpu/part3-agent/chapter17/)（线上主角是 FA Decode / fused MLP 对照）。本地主角是 **`vector_add` fixtures**，硬件为 **Radeon 8060S（`gfx1151`）+ ROCm 7.12**，工作区 `task-20260806-144647`。
+本章主角是 **`vector_add` fixtures**，硬件为 **Radeon 8060S（`gfx1151`）+ ROCm 7.12**，工作区 `task-20260806-144647`。
 
 先说结论，这也是本书和「Agent 自动优化一切」类教程的区别：
 
@@ -229,6 +229,4 @@ uv run python -c "import torch; print(torch.cuda.get_device_name(0), torch.__ver
 ## 延伸阅读
 
 - [算子优化 Agent 实战报告 · vector_add](./optimization-report.md)
-- `docs/part3-agent/算子优化Agent/ACCEPTANCE_算子优化Agent.md`
 - `code/part3-agent/chapter14/EXPERIMENT.md`
-- 线上对照：[第17章 多轮优化实战](https://datawhalechina.github.io/hello-gpu/part3-agent/chapter17/)（FA Decode / fused MLP）

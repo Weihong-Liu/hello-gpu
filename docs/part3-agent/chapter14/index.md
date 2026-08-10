@@ -9,8 +9,6 @@ description: "Hello GPU 第14章 · 参考 hello-agents、LLM Agent 基本范式
 
 本章是 Agent 篇的入口。我们沿用 [hello-agents](https://github.com/datawhalechina/hello-agents) 的概念节奏——**Agent = LLM + 工具 + 循环**——但把场景收窄到「GPU 算子优化」：目标是延迟/带宽，反馈是可复现的 benchmark 数字，而不是开放域闲聊。
 
-> 结构对齐：本节对应线上 [第14章 Agent 入门](https://datawhalechina.github.io/hello-gpu/part3-agent/chapter14/) 的六节大纲；实现与数字以本仓库 `code/part3-agent/` 为准。
-
 学完本章，你应该能够：
 
 - 用一句话解释 Agent = LLM + 工具 + 循环；
@@ -98,7 +96,7 @@ ToolExecutor.register(name, description, func, parameters_schema)
 1. **权威工具**（结果即事实）：`compile_kernel`、`bench_kernel`、`profile_kernel`、`accept_candidate`、`measure_peak`
 2. **自由工具**（允许发挥）：`ask_user`、`convert_kernel`、`run_code`、`read_reference`
 
-纪律写进系统提示：**性能数字只认权威工具**；禁止用 `run_code` 自测出一个「加速比」写进报告。工具名与线上第 15 章三件套对齐；晋升由 `accept_candidate` 单独完成。
+纪律写进系统提示：**性能数字只认权威工具**；禁止用 `run_code` 自测出一个「加速比」写进报告。晋升由 `accept_candidate` 单独完成。
 
 ## 14.5 本书 Agent 的边界
 
@@ -136,4 +134,3 @@ ToolExecutor.register(name, description, func, parameters_schema)
 - [hello-agents](https://github.com/datawhalechina/hello-agents)
 - [ReAct: Synergizing Reasoning and Acting in Language Models](https://arxiv.org/abs/2210.03629)
 - 本仓库 `code/part3-agent/HANDOFF.md`（方法论交接）
-- 线上对照：[第14章 Agent 入门](https://datawhalechina.github.io/hello-gpu/part3-agent/chapter14/)

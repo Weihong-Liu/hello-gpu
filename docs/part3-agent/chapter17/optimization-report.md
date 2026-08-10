@@ -6,8 +6,7 @@ description: "本地运行记录：工具调用链、指标变化与可视化"
 # 算子优化 Agent 实战报告 · vector_add
 
 > 本文基于一次完整本地跑通，说明 Agent **如何优化**、**调用了哪些工具**、**提升了哪些指标**，并嵌入对应可视化图。  
-> 对应教程：[第16章 设计](../chapter16/) · [第17章 实战](./index.md)  
-> 结构对照线上：[第17章 多轮优化实战](https://datawhalechina.github.io/hello-gpu/part3-agent/chapter17/)
+> 对应教程：[第16章 设计](../chapter16/) · [第17章 实战](./index.md)
 
 ## 1. 运行概况
 
