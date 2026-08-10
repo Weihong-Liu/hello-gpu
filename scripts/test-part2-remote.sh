@@ -7,7 +7,7 @@ TARGET="${SCRIPT_DIR}/part2-remote.sh"
 help_output="$(bash "${TARGET}" --help)"
 grep -Fq "status|sync|run|fetch" <<<"${help_output}"
 
-if bash "${TARGET}" run ../chapter7 true 2>/dev/null; then
+if bash "${TARGET}" run ../chapter8 true 2>/dev/null; then
     echo "unsafe chapter path unexpectedly accepted" >&2
     exit 1
 fi
@@ -18,7 +18,7 @@ if bash "${TARGET}" unknown 2>/dev/null; then
 fi
 
 test_tmp="$(mktemp -d "${TMPDIR:-/tmp}/part2-remote-test.XXXXXX")"
-local_evidence_dir="$(cd "${SCRIPT_DIR}/.." && pwd)/code/part2-kernels/chapter7/evidence"
+local_evidence_dir="$(cd "${SCRIPT_DIR}/.." && pwd)/code/part2-kernels/chapter8/evidence"
 local_evidence_created=0
 if [[ ! -e "${local_evidence_dir}" ]]; then
     local_evidence_created=1
@@ -40,7 +40,7 @@ fake_remote_rsync_called="${test_tmp}/remote-rsync-called"
 pwned_marker="${test_tmp}/pwned"
 remote_root="${test_tmp}/remote root' ;\$(touch \"${pwned_marker}\");#"
 outside_root="${test_tmp}/outside"
-mkdir -p "${fake_bin}" "${remote_root}/code/part2-kernels/chapter7"
+mkdir -p "${fake_bin}" "${remote_root}/code/part2-kernels/chapter8"
 
 cat > "${fake_bin}/ssh" <<'EOF'
 #!/usr/bin/env bash
@@ -123,7 +123,7 @@ grep -Fq '<--rsync-path=' "${fake_rsync_args}"
 rm -f "${fake_rsync_called}"
 rm -f "${fake_remote_rsync_called}"
 
-mkdir -p "${remote_root}/code/part2-kernels/chapter7/evidence"
+mkdir -p "${remote_root}/code/part2-kernels/chapter8/evidence"
 PART2_REMOTE_ROOT="${remote_root}" \
 PART2_REMOTE_HOST="fake-host" \
 PART2_FAKE_RSYNC_CALLED="${fake_rsync_called}" \
@@ -132,7 +132,7 @@ PART2_FAKE_REMOTE_RSYNC_CALLED="${fake_remote_rsync_called}" \
 PART2_FAKE_SSH_COMMAND="${fake_ssh_command}" \
 PART2_FAKE_SSH_CALLED="${fake_ssh_called}" \
 PATH="${fake_bin}:${PATH}" \
-    bash "${TARGET}" fetch chapter7
+    bash "${TARGET}" fetch chapter8
 [[ ! -e "${fake_ssh_called}" ]]
 [[ -e "${fake_remote_rsync_called}" ]]
 grep -Fxq '<fake-host:.>' "${fake_rsync_args}"
@@ -154,7 +154,7 @@ PART2_REMOTE_ROOT="${remote_root}" \
 PART2_FAKE_SSH_COMMAND="${fake_ssh_command}" \
 PART2_FAKE_SSH_CALLED="${fake_ssh_called}" \
 PATH="${fake_bin}:${PATH}" \
-    bash "${TARGET}" run chapter7 printf '<%s>\n' \
+    bash "${TARGET}" run chapter8 printf '<%s>\n' \
         '' \
         'space value' \
         'semi; printf injected' \
@@ -171,15 +171,15 @@ grep -Fq "'semi; printf injected'" "${fake_ssh_command}"
 grep -Fq "'dollar\$(printf injected)'" "${fake_ssh_command}"
 
 mkdir -p "${outside_root}"
-rm -rf "${remote_root}/code/part2-kernels/chapter7"
-ln -s "${outside_root}" "${remote_root}/code/part2-kernels/chapter7"
+rm -rf "${remote_root}/code/part2-kernels/chapter8"
+ln -s "${outside_root}" "${remote_root}/code/part2-kernels/chapter8"
 
 escaped_run_output="${test_tmp}/escaped-run"
 if PART2_REMOTE_ROOT="${remote_root}" \
     PART2_FAKE_SSH_COMMAND="${fake_ssh_command}" \
     PART2_FAKE_SSH_CALLED="${fake_ssh_called}" \
     PATH="${fake_bin}:${PATH}" \
-    bash "${TARGET}" run chapter7 true > "${escaped_run_output}" 2>&1; then
+    bash "${TARGET}" run chapter8 true > "${escaped_run_output}" 2>&1; then
     echo "escaped run path unexpectedly accepted" >&2
     exit 1
 fi
@@ -215,7 +215,7 @@ if PART2_REMOTE_ROOT="${remote_root}" \
     PART2_FAKE_SSH_COMMAND="${fake_ssh_command}" \
     PART2_FAKE_SSH_CALLED="${fake_ssh_called}" \
     PATH="${fake_bin}:${PATH}" \
-    bash "${TARGET}" fetch chapter7 > "${escaped_fetch_output}" 2>&1; then
+    bash "${TARGET}" fetch chapter8 > "${escaped_fetch_output}" 2>&1; then
     echo "escaped fetch path unexpectedly accepted" >&2
     exit 1
 fi

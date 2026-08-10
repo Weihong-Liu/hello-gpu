@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Iterable
 
 EXPECTED_IMPLEMENTATIONS = {
-    "branch-divergence": ("wave-uniform", "wave-divergent"),
     "global-memory": ("stride-1", "stride-17", "stride-257"),
     "lds-banks": ("stride-1", "stride-32", "stride-33"),
     "matrix-path": ("valu", "wmma"),
@@ -168,12 +167,11 @@ def _relative_panel(
 
 def build_figure(rows: dict[tuple[str, str], dict[str, float]]):
     plt = pyplot()
-    figure, axes = plt.subplots(2, 2, figsize=(11, 8), constrained_layout=True)
-    _relative_panel(axes[0, 0], rows, "branch-divergence", "Branch divergence")
-    _direct_panel(axes[0, 1], rows, "global-memory", "logical_bandwidth_gbs",
+    figure, axes = plt.subplots(1, 3, figsize=(15, 5), constrained_layout=True)
+    _direct_panel(axes[0], rows, "global-memory", "logical_bandwidth_gbs",
                   "Global memory", "logical GB/s")
-    _relative_panel(axes[1, 0], rows, "lds-banks", "LDS bank conflicts")
-    _direct_panel(axes[1, 1], rows, "matrix-path", "tflops",
+    _relative_panel(axes[1], rows, "lds-banks", "LDS bank conflicts")
+    _direct_panel(axes[2], rows, "matrix-path", "tflops",
                   "Matrix path", "TFLOPS")
     return figure
 

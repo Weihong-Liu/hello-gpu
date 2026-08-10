@@ -130,7 +130,7 @@ export default defineConfig({
     ],
 
     editLink: {
-      pattern: 'https://github.com/datawhalechina/hello-gpu/blob/main/docs/:path',
+      pattern: 'https://github.com/datawhalechina/hello-gpu/blob/dev/docs/:path',
       text: '在 GitHub 上编辑此页',
     },
 

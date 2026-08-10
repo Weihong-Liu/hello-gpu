@@ -9,7 +9,7 @@ description: "Hello GPU 第3章 · VGPR/SGPR/LDS 与占用率，从寄存器到 
 
 > 上一章我们跟着一次 kernel 提交看清了线程怎么划分、波前怎么落到硬件上执行——编程模型这张地图已经在你手上。这一章补上硬件体系结构的另一半。本章会做四件事：搞清楚 GPU 能同时塞下多少活儿（片上资源 VGPR/SGPR/LDS 与占用率）、把数据从寄存器到显存的内存层级理清楚、弄懂为什么读取地址的排列能让带宽差出好几倍（合并访存与 LDS bank 冲突）、最后认识一下矩阵专用指令 WMMA。
 >
-> 这几样是 Part 2 算子优化的直接地基，每一样都有对应的实战章会展开：合并访存在 [第 8 章 Element-Wise](../../part2-kernels/chapter8/index.md)、LDS 协作与 bank 在 [第 9 章 Reduction](../../part2-kernels/chapter9/index.md)、占用率/分块/寄存器累加在 [第 11 章 GEMM-Like(../../part2-kernels/chapter11/index.md)、WMMA 与融合在 [第 12 章 Fusion：融合算子](../../part2-kernels/chapter12/index.md)。本章只把概念和直觉立起来，具体怎么优化，留到对应算子章。
+> 这几样是 Part 2 算子优化的直接地基，每一样都有对应的实战章会展开：合并访存在 [第 8 章 Element-Wise](../../part2-kernels/chapter8/index.md)、LDS 协作与 bank 在 [第 9 章 Reduction](../../part2-kernels/chapter9/index.md)、占用率/分块/寄存器累加在 [第 11 章 GEMM-Like](../../part2-kernels/chapter11/index.md)、WMMA 与融合在 [第 12 章 Fusion：融合算子](../../part2-kernels/chapter12/index.md)。本章只把概念和直觉立起来，具体怎么优化，留到对应算子章。
 
 本章对应代码在：
 
@@ -54,7 +54,7 @@ flowchart LR
 
 所以别指望从「LDS 有 128 KiB」这种总数，直接算出某个 kernel 的占用率（Occupancy，也就是能同时塞下多少 wavefront）；更别以为占用率越高越好。真实的有效并发，是寄存器用量、LDS 的分配粒度、workgroup 的形状、硬件上限、能同时跑几个 workgroup、以及瓶颈到底在哪，这些因素一起决定的。比如硬把寄存器压得很低，反而可能逼出 spill（数据被挤到慢得多的显存里）或额外的指令。正确的顺序永远是：先把算法和访存逻辑写对，再去读编译器报告的资源用量，最后用 profiling 判断它是不是真的在干等访存。
 
-**迁移范围：** 本节的这些容量数字，只锚定 gfx1201 的规格；「哪种资源先用光，就先限制能塞多少」这个思路可以迁移，但具体的占用率、会不会 spill、最佳的 tile 大小，都必须针对目标 GPU、编译器和 kernel 单独去测。占用率与分块在真实算子里怎么权衡，[第 11 章 GEMM-Like(../../part2-kernels/chapter11/index.md) 会第一次系统地做。
+**迁移范围：** 本节的这些容量数字，只锚定 gfx1201 的规格；「哪种资源先用光，就先限制能塞多少」这个思路可以迁移，但具体的占用率、会不会 spill、最佳的 tile 大小，都必须针对目标 GPU、编译器和 kernel 单独去测。占用率与分块在真实算子里怎么权衡，[第 11 章 GEMM-Like](../../part2-kernels/chapter11/index.md) 会第一次系统地做。
 
 ## 3.2 内存层级：从寄存器到 GDDR6
 
@@ -343,7 +343,7 @@ hipcc --offload-arch=gfx1201 -O3 -std=c++17 rdna4_wmma.hip -o rdna4_wmma
 | `valu` | 0.037200 [0.036080, 0.038320] | 0.902001 | 基线 |
 | `wmma` | 0.016160 [0.016121, 0.016160] | 2.076388 | 2.30× |
 
-WMMA 在真实算子里怎么用（含分块、fragment 排布、与融合的配合），[第 11 章 GEMM-Like(../../part2-kernels/chapter11/index.md) 和 [第 12 章 Fusion：融合算子](../../part2-kernels/chapter12/index.md) 会展开。
+WMMA 在真实算子里怎么用（含分块、fragment 排布、与融合的配合），[第 11 章 GEMM-Like](../../part2-kernels/chapter11/index.md) 和 [第 12 章 Fusion：融合算子](../../part2-kernels/chapter12/index.md) 会展开。
 
 **迁移范围：** 这条指令、wave32 的碎片宽度和布局，只适用于 gfx12/RDNA 4；「先验证布局和对数，再比较两条语义相同的路径」这个方法可以迁移，但任何真正的大 GEMM，都得单独做自动调参（autotune）并和库实现对照。
 
@@ -392,4 +392,4 @@ WMMA 在真实算子里怎么用（含分块、fragment 排布、与融合的配
 - [AMD Radeon RX 9070 XT 产品规格](https://www.amd.com/en/products/graphics/desktops/radeon/9000-series/amd-radeon-rx-9070xt.html)：显存容量、位宽、理论板卡带宽与理论计算规格。
 - [GPUOpen: Using the Matrix Cores of AMD RDNA 4 architecture GPUs](https://gpuopen.com/learn/using_matrix_core_amd_rdna4/)：仅 gfx12 的 WMMA fragment layout 与 intrinsic 示例。
 - 选做实验：[`code/part0-intro/chapter3/`](https://github.com/datawhalechina/hello-gpu/tree/dev/code/part0-intro/chapter3)（global_memory_access / lds_bank_conflict / rdna4_wmma 受控对照）。
-- 实战展开：[第 8 章 Element-Wise](../../part2-kernels/chapter8/index.md)、[第 9 章 Reduction](../../part2-kernels/chapter9/index.md)、[第 11 章 GEMM-Like(../../part2-kernels/chapter11/index.md)、[第 12 章 Fusion：融合算子](../../part2-kernels/chapter12/index.md)。
+- 实战展开：[第 8 章 Element-Wise](../../part2-kernels/chapter8/index.md)、[第 9 章 Reduction](../../part2-kernels/chapter9/index.md)、[第 11 章 GEMM-Like](../../part2-kernels/chapter11/index.md)、[第 12 章 Fusion：融合算子](../../part2-kernels/chapter12/index.md)。

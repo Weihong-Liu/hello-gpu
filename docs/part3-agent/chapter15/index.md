@@ -91,7 +91,7 @@ benchmark 告诉你「慢了」，profiling 告诉你「慢在哪」。Agent 需
 }
 ```
 
-真实实验里的一个例子：FA Decode 最终版（split-KV，第 17.3 节的 v3）跑完 profiling 后，工具给出的信号是「DRAM 带宽利用率 69.5%，grid 128 block 填满 68 个 SM」（RTX 3080 上实测；SM 是 NVIDIA 对第 2 章 CU/WGP 的称呼）。Agent 据此判断：还有约 30% 带宽没用上，方向是让访存更饱和，而不是换算法。这个判断和人工分析的结论一致。
+真实实验里的一个例子：FA Decode 最终版（split-KV，第 17.3 节的 v3）跑完 profiling 后，工具给出的信号是「DRAM 带宽利用率 69.5%，grid 128 block 填满 68 个 SM」（RTX 3080 上实测；SM 是 NVIDIA 对第 3 章 CU/WGP 的称呼）。Agent 据此判断：还有约 30% 带宽没用上，方向是让访存更饱和，而不是换算法。这个判断和人工分析的结论一致。
 
 profiling 工具封装的关键是**信号提炼规则要写在工具里**：什么样的利用率算访存受限、什么样的算占用率不足，规则固定下来，Agent 每次拿到的是结论而不是数据。
 

@@ -314,15 +314,15 @@ $$
 BW_{effective} = \frac{3 \times 16{,}777{,}216 \times 4\ \text{Byte}}{0.345\ \text{ms}} \approx 583\ \text{GB/s}
 $$
 
-RX 9070 XT 的标称显存带宽约 $760\ \text{GB/s}$（厂家规格，记作 $BW_{peak}$），于是带宽利用率：
+RX 9070 XT 的标称显存带宽约 $640\ \text{GB/s}$（厂家规格，记作 $BW_{peak}$，见第 2 章），于是带宽利用率：
 
 $$
-\text{利用率} = \frac{BW_{effective}}{BW_{peak}} = \frac{583\ \text{GB/s}}{760\ \text{GB/s}} \approx 77\%
+\text{利用率} = \frac{BW_{effective}}{BW_{peak}} = \frac{583\ \text{GB/s}}{640\ \text{GB/s}} \approx 91\%
 $$
 
-对一个如此简单的 kernel 来说，~77% 已经相当不错——剩下的差距来自 launch 开销、计时边界、缓存与写路径等因素。这也说明 vector add 的访存效率已经很高（完全合并、线性流式），**优化空间不大；想再快，只能提高算术强度**（比如把多个逐元素操作融合成一个 kernel，让搬一次数据做更多计算）。
+对一个如此简单的 kernel 来说，~91% 已经相当不错——剩下的差距来自 launch 开销、计时边界、缓存与写路径等因素。这也说明 vector add 的访存效率已经很高（完全合并、线性流式），**优化空间不大；想再快，只能提高算术强度**（比如把多个逐元素操作融合成一个 kernel，让搬一次数据做更多计算）。
 
-这套「先看算术强度判断瓶颈在带宽还是算力、再用实测带宽和上限比利用率」的思路，会在 Part 2 每个算子里反复用到：[第 8 章 Element-Wise](../../part2-kernels/chapter8/index.md) 会第一次系统地做这件事，[第 11 章 GEMM-Like(../../part2-kernels/chapter11/index.md)、[第 12 章 Fusion：融合算子](../../part2-kernels/chapter12/index.md) 则是高算术强度、吃算力的另一侧。
+这套「先看算术强度判断瓶颈在带宽还是算力、再用实测带宽和上限比利用率」的思路，会在 Part 2 每个算子里反复用到：[第 8 章 Element-Wise](../../part2-kernels/chapter8/index.md) 会第一次系统地做这件事，[第 11 章 GEMM-Like](../../part2-kernels/chapter11/index.md)、[第 12 章 Fusion：融合算子](../../part2-kernels/chapter12/index.md) 则是高算术强度、吃算力的另一侧。
 
 ### 4.4.4 何时值得用 GPU
 
@@ -366,7 +366,7 @@ host 端 HIP API
 两个结论：
 
 1. **async dispatch 的绝对开销在个位数 μs 量级**，其中只有约 13% 是 HIP 运行时带来的（2.6 vs 2.26 μs）——大部分时间花在驱动与硬件的固定流程上，绕开 HIP 也省不掉多少。
-2. **sync 的 20 μs 里大头是「等」**：sync dispatch 要等 GPU 把活儿干完再返回，所以时间包含任务执行。真正能优化的是 async 路径。
+2. **sync 的 20.5 μs 里大头是「等」**：sync dispatch 要等 GPU 把活儿干完再返回，所以时间包含任务执行。真正能优化的是 async 路径。
 
 对本章的 vector add（kernel 约 0.345 ms）来说，2.6 μs 的 dispatch 开销占比不到 1%，可以忽略。但**对微 kernel 或者被拆得很碎的 kernel 序列，dispatch 开销会吃掉可观的比例**——第 17 章会看到一个真实例子：split-KV 把一次注意力拆成 160 次 launch，小输入时启动开销反而盖过了并行度收益。
 
@@ -424,7 +424,7 @@ python benchmark_vector_add.py
 - 第一个 HIP kernel 使用"一线程处理一个元素"的最简单映射方式，方便理解 block、thread 和全局下标。
 - baseline benchmark 使用 warmup + repeat，并用 GPU event 计时，避免只量到 CPU 提交开销。
 - vector add 的算术强度极低（~0.083 FLOP/Byte），是典型的 访存受限算子——性能几乎完全取决于显存带宽，而非算力。
-- 实测带宽 ~583 GB/s，约为标称 760 GB/s 的 77%；对这么简单的 kernel 已经不错，想再快只能提高算术强度（融合）。完整的 Roofline 读图方法在 Part 1 第 7 章。
+- 实测带宽 ~583 GB/s，约为标称 640 GB/s 的 91%；对这么简单的 kernel 已经不错，想再快只能提高算术强度（融合）。完整的 Roofline 读图方法在 Part 1 第 7 章。
 - 下一章进入 Part 1 profiling 篇，先系统学怎么量准数字（benchmark 与可信计时）。
 
 ## 延伸阅读

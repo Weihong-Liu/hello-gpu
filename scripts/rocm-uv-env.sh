@@ -395,12 +395,12 @@ install_basic_tools() {
 
 install_apt_packages_best_effort() {
     if [[ "$PKG_MGR" != "apt" ]]; then
-        return 1
+        return 0
     fi
 
     if [[ "$EUID" -ne 0 ]] && ! has_cmd sudo; then
         warn "没有 sudo，无法自动安装系统依赖：$*"
-        return 1
+        return 0
     fi
 
     local sudo_cmd=()
@@ -1768,7 +1768,9 @@ main() {
     ensure_uv
     ensure_fzf
     ensure_python
-    check_system_build_deps
+    if [[ "${INSTALL_MODE}" != "minimal" ]]; then
+        check_system_build_deps
+    fi
 
     select_gpu_arch
 

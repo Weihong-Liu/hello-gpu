@@ -7,8 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from chapter7 import plot_vector_add_ch7 as plot
-from chapter7.plot_vector_add_ch7 import (
+from chapter8 import plot_vector_add_ch7 as plot
+from chapter8.plot_vector_add_ch7 import (
     format_experiment_note,
     format_experiment_subtitle,
     labels_for_rows,
@@ -16,7 +16,7 @@ from chapter7.plot_vector_add_ch7 import (
 )
 
 
-class Chapter7PlotMetadataTest(unittest.TestCase):
+class Chapter8PlotMetadataTest(unittest.TestCase):
     IMPLEMENTATIONS = (
         "hip-v0",
         "hip-v1-contiguous",
@@ -36,7 +36,7 @@ class Chapter7PlotMetadataTest(unittest.TestCase):
     def _run_plot_cli(
         self, rows: list[tuple[str, str, str]]
     ) -> tuple[subprocess.CompletedProcess[str], bool]:
-        script = Path(__file__).parents[1] / "chapter7" / "plot_vector_add_ch7.py"
+        script = Path(__file__).parents[1] / "chapter8" / "plot_vector_add_ch7.py"
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             summary = root / "summary.csv"
@@ -125,7 +125,7 @@ class Chapter7PlotMetadataTest(unittest.TestCase):
         self.assertFalse(output_exists)
 
     def test_plot_cli_rejects_metadata_mismatch_before_plotting(self) -> None:
-        script = Path(__file__).parents[1] / "chapter7" / "plot_vector_add_ch7.py"
+        script = Path(__file__).parents[1] / "chapter8" / "plot_vector_add_ch7.py"
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             summary = root / "summary.csv"
@@ -210,10 +210,10 @@ class Chapter7PlotMetadataTest(unittest.TestCase):
             validate_summary_metadata(rows, manifest)
 
 
-class Chapter7PublicCommandContractTest(unittest.TestCase):
+class Chapter8PublicCommandContractTest(unittest.TestCase):
     def test_run_all_reports_curated_evidence_directory(self) -> None:
         script = (
-            Path(__file__).parents[1] / "chapter7" / "run_all.sh"
+            Path(__file__).parents[1] / "chapter8" / "run_all.sh"
         ).read_text(encoding="utf-8")
 
         self.assertNotIn('"${SCRIPT_DIR}/results"', script)
@@ -224,20 +224,20 @@ class Chapter7PublicCommandContractTest(unittest.TestCase):
             Path(__file__).parents[3]
             / "docs"
             / "part2-kernels"
-            / "chapter7"
+            / "chapter8"
             / "index.md"
         ).read_text(encoding="utf-8")
-        rerun_section = document.split("### 7.9.1 一键入口", 1)[1].split(
-            "### 7.9.2", 1
+        rerun_section = document.split("### 8.9.1 一键入口", 1)[1].split(
+            "### 8.9.2", 1
         )[0]
 
         self.assertIn('export SOURCE_COMMIT="$(git rev-parse HEAD)"', rerun_section)
-        self.assertIn("bash chapter7/run_all.sh", rerun_section)
-        self.assertIn("bash chapter7/profile_all.sh", rerun_section)
-        self.assertIn("chapter7/evidence/summary.csv", rerun_section)
-        self.assertIn("chapter7/evidence/manifest.json", rerun_section)
+        self.assertIn("bash chapter8/run_all.sh", rerun_section)
+        self.assertIn("bash chapter8/profile_all.sh", rerun_section)
+        self.assertIn("chapter8/evidence/summary.csv", rerun_section)
+        self.assertIn("chapter8/evidence/manifest.json", rerun_section)
         self.assertIn(
-            "../../docs/part2-kernels/chapter7/images/"
+            "../../docs/part2-kernels/chapter8/images/"
             "vector-add-ch7-bandwidth.png",
             rerun_section,
         )
@@ -245,7 +245,7 @@ class Chapter7PublicCommandContractTest(unittest.TestCase):
 
     def test_experiment_documents_remote_plot_and_single_png_transfer(self) -> None:
         experiment = (
-            Path(__file__).parents[1] / "chapter7" / "EXPERIMENT.md"
+            Path(__file__).parents[1] / "chapter8" / "EXPERIMENT.md"
         ).read_text(encoding="utf-8")
         reproduction = experiment.split("## Reproduction commands", 1)[1].split(
             "## Curated evidence files", 1
