@@ -61,8 +61,9 @@ HIP_BLOCK="${HIP_BLOCK:-256}"
 TRITON_BLOCK="${TRITON_BLOCK:-1024}"
 PROFILE_WARMUP="${PROFILE_WARMUP:-0}"
 PROFILE_REPEAT="${PROFILE_REPEAT:-10}"
+TRITON_PROFILE_MODE="${TRITON_PROFILE_MODE:-skip}"
 SEED="${SEED:-20260716}"
-BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hello-gpu-ch7-profile.XXXXXX")"
+BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hello-gpu-chapter8-profile.XXXXXX")"
 HIP_BINARY="${BUILD_DIR}/vector_add_hip"
 
 cleanup() {
@@ -71,6 +72,15 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "${LOG_DIR}" "${PROFILE_DIR}"
+rm -f \
+    "${PROFILE_DIR}"/*_kernel_trace.csv \
+    "${PROFILE_DIR}"/*_agent_info.csv \
+    "${PROFILE_DIR}/profile_config.env"
+rm -f "${SCRIPT_DIR}/evidence/profile_summary.csv"
+python "${SCRIPT_DIR}/summarize_results.py" \
+    --chapter-dir "${SCRIPT_DIR}" \
+    --git-commit "${SOURCE_COMMIT}"
+echo "profile evidence reset before trace collection"
 
 bash "${SCRIPT_DIR}/collect_environment.sh" \
     2>&1 | tee "${LOG_DIR}/profile_environment.log"
@@ -96,6 +106,7 @@ profile_command() {
         2>&1 | tee "${LOG_DIR}/profile_${label}.log"
 }
 
+hip_profile_failed=0
 for version in v0 v1-contiguous v1-strided v2 v3; do
     hip_args=(
         --version "${version}"
@@ -108,30 +119,48 @@ for version in v0 v1-contiguous v1-strided v2 v3; do
     if [[ -n "${GRID:-}" ]]; then
         hip_args+=(--grid "${GRID}")
     fi
-    profile_command "hip-${version}" "${HIP_BINARY}" "${hip_args[@]}"
+    if ! profile_command "hip-${version}" "${HIP_BINARY}" "${hip_args[@]}"; then
+        hip_profile_failed=1
+    fi
 done
 
-# Populate Triton's compilation cache and fail early on correctness before
-# starting one profiler process per version.
-python "${SCRIPT_DIR}/vector_add_triton.py" \
+# Populate Triton's compilation cache and validate correctness before profiling.
+triton_profile_failed=0
+triton_precheck_passed=1
+if ! python "${SCRIPT_DIR}/vector_add_triton.py" \
     --version all \
     --size "${SIZE}" \
     --block "${TRITON_BLOCK}" \
     --warmup 0 \
     --repeat 1 \
     --seed "${SEED}" \
-    2>&1 | tee "${LOG_DIR}/profile_triton_precheck.log"
+    2>&1 | tee "${LOG_DIR}/profile_triton_precheck.log"; then
+    triton_precheck_passed=0
+    triton_profile_failed=1
+fi
 
-for version in t0 t1; do
-    profile_command "triton-${version}" \
-        python "${SCRIPT_DIR}/vector_add_triton.py" \
-        --version "${version}" \
-        --size "${SIZE}" \
-        --block "${TRITON_BLOCK}" \
-        --warmup "${PROFILE_WARMUP}" \
-        --repeat "${PROFILE_REPEAT}" \
-        --seed "${SEED}"
-done
+if ((triton_precheck_passed != 0)); then
+    if [[ "${TRITON_PROFILE_MODE}" == "direct" ]]; then
+        for version in t0 t1; do
+            if ! profile_command "triton-${version}" \
+                python "${SCRIPT_DIR}/vector_add_triton.py" \
+                --version "${version}" \
+                --size "${SIZE}" \
+                --block "${TRITON_BLOCK}" \
+                --warmup "${PROFILE_WARMUP}" \
+                --repeat "${PROFILE_REPEAT}" \
+                --seed "${SEED}"; then
+                triton_profile_failed=1
+            fi
+        done
+    elif [[ "${TRITON_PROFILE_MODE}" == "skip" ]]; then
+        echo "Triton profiling skipped by TRITON_PROFILE_MODE=skip"
+        triton_profile_failed=1
+    else
+        echo "TRITON_PROFILE_MODE must be direct or skip; got ${TRITON_PROFILE_MODE}" >&2
+        exit 2
+    fi
+fi
 
 {
     echo "source_commit=${SOURCE_COMMIT}"
@@ -145,9 +174,18 @@ done
     echo "seed=${SEED}"
     echo "gpu_arch=${GPU_ARCH}"
     echo "grid=${GRID:-auto}"
+    echo "triton_profile_mode=${TRITON_PROFILE_MODE}"
 } > "${PROFILE_DIR}/profile_config.env"
 
-python "${SCRIPT_DIR}/summarize_results.py" \
+profile_summary_incomplete=0
+if ! python "${SCRIPT_DIR}/summarize_results.py" \
     --chapter-dir "${SCRIPT_DIR}" \
-    --git-commit "${SOURCE_COMMIT}"
+    --git-commit "${SOURCE_COMMIT}" \
+    --require-complete-profiles; then
+    profile_summary_incomplete=1
+fi
 echo "profiles written to ${PROFILE_DIR}"
+if ((hip_profile_failed != 0 || triton_profile_failed != 0 || profile_summary_incomplete != 0)); then
+    echo "Profiling incomplete; partial profile_summary.csv was published" >&2
+    exit 1
+fi

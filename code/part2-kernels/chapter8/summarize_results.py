@@ -82,6 +82,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--git-commit")
     parser.add_argument("--print-source-sha256", action="store_true")
+    parser.add_argument("--require-complete-profiles", action="store_true")
     return parser.parse_args()
 
 
@@ -453,6 +454,15 @@ def main() -> None:
     profile_rows = [
         read_trace_fields(paths, str(row["implementation"])) for row in summary
     ]
+    incomplete_profiles = []
+    for row in profile_rows:
+        try:
+            dispatches = int(row["trace_dispatches"])
+        except (KeyError, TypeError, ValueError):
+            incomplete_profiles.append(str(row["implementation"]))
+        else:
+            if dispatches <= 0:
+                incomplete_profiles.append(str(row["implementation"]))
     manifest.pop("_root")
 
     def write_staged(evidence: Path) -> None:
@@ -467,6 +477,10 @@ def main() -> None:
 
     publish_evidence(paths, write_staged)
     print(f"wrote {len(summary)} implementations to {paths.evidence}")
+    if args.require_complete_profiles and incomplete_profiles:
+        raise SystemExit(
+            "profile_summary incomplete for: " + ", ".join(incomplete_profiles)
+        )
 
 
 if __name__ == "__main__":

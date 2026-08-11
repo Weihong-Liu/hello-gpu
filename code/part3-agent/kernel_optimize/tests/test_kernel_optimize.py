@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from kernel_optimize import llm as llm_module
+from kernel_optimize import agent as agent_module
 from kernel_optimize import tools as tools_module
 from kernel_optimize.agent import run_agent
 from kernel_optimize.measure import _has_peaks, ensure_peak
@@ -333,6 +334,24 @@ class AgentLoopTest(unittest.TestCase):
                 report = run_agent(ws.root)
             self.assertEqual(report, "收尾")
 
+    def test_non_object_tool_args_are_fed_back_instead_of_crashing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = _make_workspace(tmp)
+            responses = [
+                _msg(None, [_call("get_environment", "[]")]),
+                _msg("收尾"),
+            ]
+            index = {"i": 0}
+
+            def fake_chat(messages, tools=None, temperature=0.2):
+                response = responses[index["i"]]
+                index["i"] += 1
+                return response
+
+            with mock.patch.object(llm_module, "chat", fake_chat):
+                report = run_agent(ws.root)
+            self.assertEqual(report, "收尾")
+
     def test_text_only_opening_is_nudged_then_backstop(self) -> None:
         # 模型一直只用文本、从不调工具：被拦 _MAX_NUDGES 次后兜底返回。
         with tempfile.TemporaryDirectory() as tmp:
@@ -373,6 +392,724 @@ class AgentLoopTest(unittest.TestCase):
             self.assertIn("加速", report)
             self.assertNotIn("请确认", report)
             self.assertIn("nudge", actions)
+    def test_batch_blocks_new_candidate_until_pending_candidate_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = _make_workspace(tmp)
+            candidate = "def launch(*a):\n    return 1\n"
+            calls = []
+
+            class FakeExecutor:
+                def call(self, name, arguments):
+                    calls.append((name, arguments))
+                    if name == "bench_kernel":
+                        return json.dumps({"ok": True, "median_ms": 0.1})
+                    if name == "accept_candidate":
+                        ws.record({"accepted": False, "change": arguments.get("change")})
+                        return json.dumps({"accepted": False, "reason": "below_threshold"})
+                    return "{}"
+
+            schema = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("bench_kernel", "compile_kernel", "accept_candidate", "run_code")
+            ]
+            responses = [
+                _msg(None, [_call("bench_kernel", json.dumps({"source": candidate}))]),
+                _msg(None, [_call("compile_kernel", json.dumps({"source": "newer"}))]),
+                _msg(None, [_call("accept_candidate", json.dumps({
+                    "source": candidate,
+                    "change": "candidate one",
+                }))]),
+            ]
+            index = {"i": 0}
+            exposed_tools = []
+
+            def fake_chat(messages, tools=None, temperature=0.2):
+                exposed_tools.append([item["function"]["name"] for item in tools])
+                response = responses[index["i"]]
+                index["i"] += 1
+                return response
+
+            with (
+                mock.patch.object(agent_module, "build_tools", return_value=(FakeExecutor(), schema)),
+                mock.patch.object(llm_module, "chat", fake_chat),
+            ):
+                report = run_agent(ws.root, max_steps=3, batch=True)
+
+            self.assertNotIn("run_code", exposed_tools[0])
+            self.assertEqual([name for name, _ in calls], ["bench_kernel", "accept_candidate"])
+            self.assertTrue((ws.root / "trajectory.jsonl").is_file())
+            self.assertIn("轨迹见", report)
+
+    def test_batch_finalizes_pending_candidate_at_step_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = _make_workspace(tmp)
+            candidate = "def launch(*a):\n    return 1\n"
+            calls = []
+
+            class FakeExecutor:
+                def call(self, name, arguments):
+                    calls.append((name, arguments))
+                    if name == "bench_kernel":
+                        return json.dumps({"ok": True, "median_ms": 0.1})
+                    if name == "accept_candidate":
+                        ws.record({"accepted": False, "change": arguments.get("change")})
+                        return json.dumps({"accepted": False, "reason": "below_threshold"})
+                    return "{}"
+
+            schema = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("bench_kernel", "accept_candidate")
+            ]
+            response = _msg(
+                None,
+                [_call("bench_kernel", json.dumps({"source": candidate}))],
+            )
+
+            with (
+                mock.patch.object(agent_module, "build_tools", return_value=(FakeExecutor(), schema)),
+                mock.patch.object(llm_module, "chat", return_value=response),
+            ):
+                report = run_agent(ws.root, max_steps=1, batch=True)
+
+            self.assertEqual([name for name, _ in calls], ["bench_kernel", "accept_candidate"])
+            self.assertTrue((ws.root / "trajectory.jsonl").is_file())
+            self.assertIn("轨迹见", report)
+            status = json.loads(
+                (ws.root / "agent-status.json").read_text(encoding="utf-8")
+            )
+            self.assertTrue(status["evidenceReady"])
+            self.assertEqual(status["trajectoryRows"], 1)
+
+    def test_batch_step_limit_does_not_claim_missing_trajectory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = _make_workspace(tmp)
+
+            class FakeExecutor:
+                def call(self, name, arguments):
+                    return json.dumps({"device": "test"})
+
+            schema = [{"type": "function", "function": {"name": "get_environment"}}]
+            response = _msg(None, [_call("get_environment", "{}")])
+
+            with (
+                mock.patch.object(agent_module, "build_tools", return_value=(FakeExecutor(), schema)),
+                mock.patch.object(llm_module, "chat", return_value=response),
+            ):
+                report = run_agent(ws.root, max_steps=1, batch=True)
+
+            self.assertFalse((ws.root / "trajectory.jsonl").exists())
+            self.assertIn("未生成轨迹", report)
+            self.assertNotIn("轨迹见", report)
+            status = json.loads(
+                (ws.root / "agent-status.json").read_text(encoding="utf-8")
+            )
+            self.assertFalse(status["evidenceReady"])
+            self.assertEqual(status["trajectoryRows"], 0)
+
+    def test_batch_text_completion_without_trajectory_returns_honest_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = _make_workspace(tmp)
+
+            class FakeExecutor:
+                def call(self, name, arguments):
+                    return json.dumps({"device": "test"})
+
+            schema = [{"type": "function", "function": {"name": "get_environment"}}]
+            responses = [
+                _msg(None, [_call("get_environment", "{}")]),
+                _msg("最终报告：已完成优化。"),
+                _msg("最终报告：已完成优化。"),
+                _msg("最终报告：已完成优化。"),
+                _msg("最终报告：已完成优化。"),
+            ]
+            index = {"i": 0}
+
+            def fake_chat(messages, tools=None, temperature=0.2):
+                response = responses[index["i"]]
+                index["i"] += 1
+                return response
+
+            with (
+                mock.patch.object(agent_module, "build_tools", return_value=(FakeExecutor(), schema)),
+                mock.patch.object(llm_module, "chat", fake_chat),
+            ):
+                report = run_agent(ws.root, max_steps=5, batch=True)
+
+            self.assertIn("未生成轨迹", report)
+            self.assertNotIn("已完成优化", report)
+
+    def test_batch_persists_pending_candidate_across_interrupted_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = _make_workspace(tmp)
+            candidate = "def launch(*a):\n    return 1\n"
+
+            class FakeExecutor:
+                def call(self, name, arguments):
+                    if name == "bench_kernel":
+                        return json.dumps({"ok": True, "median_ms": 0.1})
+                    if name == "accept_candidate":
+                        ws.record({"accepted": False, "change": arguments.get("change")})
+                        return json.dumps({"accepted": False, "reason": "below_threshold"})
+                    return "{}"
+
+            schema = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("bench_kernel", "accept_candidate")
+            ]
+            calls = {"count": 0}
+
+            def interrupted_chat(messages, tools=None, temperature=0.2):
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    return _msg(
+                        None,
+                        [_call("bench_kernel", json.dumps({"source": candidate}))],
+                    )
+                raise RuntimeError("simulated 429 interruption")
+
+            with (
+                mock.patch.object(agent_module, "build_tools", return_value=(FakeExecutor(), schema)),
+                mock.patch.object(llm_module, "chat", interrupted_chat),
+                self.assertRaisesRegex(RuntimeError, "429 interruption"),
+            ):
+                run_agent(ws.root, max_steps=2, batch=True)
+
+            pending_path = ws.root / "pending_candidate.py"
+            self.assertEqual(pending_path.read_text(encoding="utf-8"), candidate)
+
+            resume_response = _msg("最终报告：已读取恢复裁决。")
+            with (
+                mock.patch.object(agent_module, "build_tools", return_value=(FakeExecutor(), schema)),
+                mock.patch.object(llm_module, "chat", return_value=resume_response),
+            ):
+                report = run_agent(ws.root, max_steps=1, batch=True)
+
+            self.assertFalse(pending_path.exists())
+            self.assertTrue((ws.root / "trajectory.jsonl").is_file())
+            self.assertIn("恢复裁决", report)
+
+    def test_failed_auto_accept_keeps_pending_candidate_and_reports_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = _make_workspace(tmp)
+            ws.record({"accepted": False, "change": "older round"})
+            candidate = "def launch(*a):\n    return 1\n"
+
+            class FakeExecutor:
+                def call(self, name, arguments):
+                    if name == "bench_kernel":
+                        return json.dumps({"ok": True, "median_ms": 0.1})
+                    if name == "accept_candidate":
+                        return "✗ evaluator unavailable"
+                    return "{}"
+
+            schema = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("bench_kernel", "accept_candidate")
+            ]
+            response = _msg(
+                None,
+                [_call("bench_kernel", json.dumps({"source": candidate}))],
+            )
+
+            with (
+                mock.patch.object(agent_module, "build_tools", return_value=(FakeExecutor(), schema)),
+                mock.patch.object(llm_module, "chat", return_value=response),
+            ):
+                report = run_agent(ws.root, max_steps=1, batch=True)
+
+            self.assertTrue((ws.root / "pending_candidate.py").is_file())
+            self.assertIn("最后一个候选未完成裁决", report)
+
+    def test_auto_rejection_replaces_stale_success_final(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = _make_workspace(tmp)
+            candidate = "def launch(*a):\n    return 1\n"
+
+            class FakeExecutor:
+                def call(self, name, arguments):
+                    if name == "bench_kernel":
+                        return json.dumps({"ok": True, "median_ms": 0.1})
+                    if name == "accept_candidate":
+                        ws.record({"accepted": False, "change": arguments.get("change")})
+                        return json.dumps({"accepted": False, "reason": "below_threshold"})
+                    return "{}"
+
+            schema = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("bench_kernel", "accept_candidate")
+            ]
+            responses = [
+                _msg(None, [_call("bench_kernel", json.dumps({"source": candidate}))]),
+                _msg("最终报告：候选已经成功晋升。"),
+                _msg("最终报告：候选已经成功晋升。"),
+                _msg("最终报告：候选已经成功晋升。"),
+                _msg("最终报告：候选已经成功晋升。"),
+            ]
+            index = {"i": 0}
+
+            def fake_chat(messages, tools=None, temperature=0.2):
+                response = responses[index["i"]]
+                index["i"] += 1
+                return response
+
+            with (
+                mock.patch.object(agent_module, "build_tools", return_value=(FakeExecutor(), schema)),
+                mock.patch.object(llm_module, "chat", fake_chat),
+            ):
+                report = run_agent(ws.root, max_steps=5, batch=True)
+
+            self.assertNotIn("成功晋升", report)
+            self.assertIn("below_threshold", report)
+            self.assertFalse((ws.root / "pending_candidate.py").exists())
+
+    def test_batch_hard_rejects_hidden_run_code_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = _make_workspace(tmp)
+            executor_calls = []
+            exposed_tools = []
+
+            class FakeExecutor:
+                def call(self, name, arguments):
+                    executor_calls.append(name)
+                    return "{}"
+
+            schema = [{"type": "function", "function": {"name": "run_code"}}]
+
+            def fake_chat(messages, tools=None, temperature=0.2):
+                exposed_tools.append([item["function"]["name"] for item in tools])
+                return _msg(None, [_call("run_code", json.dumps({"code": "print(1)"}))])
+
+            with (
+                mock.patch.object(agent_module, "build_tools", return_value=(FakeExecutor(), schema)),
+                mock.patch.object(llm_module, "chat", fake_chat),
+            ):
+                run_agent(ws.root, max_steps=1, batch=True)
+
+            self.assertEqual(exposed_tools, [[]])
+            self.assertEqual(executor_calls, [])
+
+    def test_batch_baseline_bench_does_not_create_pending_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = _make_workspace(tmp)
+            baseline = ws.best_path.read_text(encoding="utf-8")
+            calls = []
+
+            class FakeExecutor:
+                def call(self, name, arguments):
+                    calls.append(name)
+                    return json.dumps({"ok": True, "median_ms": 0.1})
+
+            schema = [{"type": "function", "function": {"name": "bench_kernel"}}]
+            response = _msg(None, [_call(
+                "bench_kernel",
+                json.dumps({"source": baseline}),
+            )])
+            with (
+                mock.patch.object(agent_module, "build_tools", return_value=(FakeExecutor(), schema)),
+                mock.patch.object(llm_module, "chat", return_value=response),
+            ):
+                report = run_agent(ws.root, max_steps=1, batch=True)
+
+            self.assertEqual(calls, ["bench_kernel"])
+            self.assertFalse((ws.root / "pending_candidate.py").exists())
+            self.assertIn("未生成轨迹", report)
+
+    def test_compile_retries_do_not_create_pending_before_successful_bench(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = _make_workspace(tmp)
+            first = "def launch(*a):\n    broken\n"
+            corrected = "def launch(*a):\n    return 1\n"
+            calls = []
+
+            class FakeExecutor:
+                def call(self, name, arguments):
+                    calls.append((name, arguments["source"]))
+                    return json.dumps({
+                        "ok": arguments["source"] == corrected,
+                        "stage": "run" if arguments["source"] == corrected else "compile",
+                    })
+
+            schema = [{"type": "function", "function": {"name": "compile_kernel"}}]
+            response = _msg(None, [
+                _call("compile_kernel", json.dumps({"source": first}), "compile-1"),
+                _call("compile_kernel", json.dumps({"source": corrected}), "compile-2"),
+            ])
+            with (
+                mock.patch.object(agent_module, "build_tools", return_value=(FakeExecutor(), schema)),
+                mock.patch.object(llm_module, "chat", return_value=response),
+            ):
+                report = run_agent(ws.root, max_steps=1, batch=True)
+
+            self.assertEqual(calls, [
+                ("compile_kernel", first),
+                ("compile_kernel", corrected),
+            ])
+            self.assertFalse((ws.root / "pending_candidate.py").exists())
+            self.assertIn("未完成 accept_candidate 权威裁决", report)
+
+    def test_batch_bench_profile_accept_same_source_records_trajectory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = _make_workspace(tmp)
+            candidate = "def launch(*a):\n    return 1\n"
+            calls = []
+
+            class FakeExecutor:
+                def call(self, name, arguments):
+                    calls.append(name)
+                    if name == "bench_kernel":
+                        return json.dumps({"ok": True, "median_ms": 0.1})
+                    if name == "profile_kernel":
+                        return json.dumps({"ok": True, "bound": "memory-bound"})
+                    if name == "accept_candidate":
+                        ws.record({"accepted": False, "change": arguments.get("change")})
+                        return json.dumps({"accepted": False, "reason": "below_threshold"})
+                    return "{}"
+
+            schema = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("bench_kernel", "profile_kernel", "accept_candidate")
+            ]
+            response = _msg(None, [
+                _call("bench_kernel", json.dumps({"source": candidate}), "bench"),
+                _call("profile_kernel", json.dumps({"source": candidate}), "profile"),
+                _call("accept_candidate", json.dumps({
+                    "source": candidate,
+                    "change": "candidate",
+                }), "accept"),
+            ])
+            with (
+                mock.patch.object(agent_module, "build_tools", return_value=(FakeExecutor(), schema)),
+                mock.patch.object(llm_module, "chat", return_value=response),
+            ):
+                run_agent(ws.root, max_steps=1, batch=True)
+
+            self.assertEqual(calls, ["bench_kernel", "profile_kernel", "accept_candidate"])
+            self.assertTrue((ws.root / "trajectory.jsonl").is_file())
+            self.assertFalse((ws.root / "pending_candidate.py").exists())
+
+    def test_batch_wrong_source_accept_is_blocked_then_exact_source_is_finalized(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = _make_workspace(tmp)
+            candidate = "def launch(*a):\n    return 1\n"
+            calls = []
+
+            class FakeExecutor:
+                def call(self, name, arguments):
+                    calls.append((name, arguments))
+                    if name == "bench_kernel":
+                        return json.dumps({"ok": True, "median_ms": 0.1})
+                    if name == "accept_candidate":
+                        ws.record({"accepted": False, "change": arguments.get("change")})
+                        return json.dumps({"accepted": False, "reason": "below_threshold"})
+                    return "{}"
+
+            schema = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("bench_kernel", "accept_candidate")
+            ]
+            response = _msg(None, [
+                _call("bench_kernel", json.dumps({"source": candidate}), "bench"),
+                _call("accept_candidate", json.dumps({
+                    "source": candidate + "\n",
+                    "change": "wrong bytes",
+                }), "wrong-accept"),
+            ])
+            with (
+                mock.patch.object(agent_module, "build_tools", return_value=(FakeExecutor(), schema)),
+                mock.patch.object(llm_module, "chat", return_value=response),
+            ):
+                run_agent(ws.root, max_steps=1, batch=True)
+
+            self.assertEqual([name for name, _ in calls], ["bench_kernel", "accept_candidate"])
+            self.assertEqual(calls[-1][1]["source"], candidate)
+            self.assertTrue((ws.root / "trajectory.jsonl").is_file())
+
+    def test_batch_trailing_newline_difference_is_a_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = _make_workspace(tmp)
+            candidate = ws.best_path.read_text(encoding="utf-8") + "\n"
+            calls = []
+
+            class FakeExecutor:
+                def call(self, name, arguments):
+                    calls.append(name)
+                    if name == "bench_kernel":
+                        return json.dumps({"ok": True, "median_ms": 0.1})
+                    if name == "accept_candidate":
+                        ws.record({"accepted": False})
+                        return json.dumps({"accepted": False, "reason": "below_threshold"})
+                    return "{}"
+
+            schema = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("bench_kernel", "accept_candidate")
+            ]
+            response = _msg(None, [_call(
+                "bench_kernel",
+                json.dumps({"source": candidate}),
+            )])
+            with (
+                mock.patch.object(agent_module, "build_tools", return_value=(FakeExecutor(), schema)),
+                mock.patch.object(llm_module, "chat", return_value=response),
+            ):
+                run_agent(ws.root, max_steps=1, batch=True)
+
+            self.assertEqual(calls, ["bench_kernel", "accept_candidate"])
+
+    def test_batch_existing_trajectory_is_added_to_grounded_rerun_goal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = _make_workspace(tmp)
+            ws.record({"accepted": True, "change": "older accepted round"})
+            seen_messages = []
+
+            class FakeExecutor:
+                def call(self, name, arguments):
+                    return json.dumps({"device": "test"})
+
+            schema = [{"type": "function", "function": {"name": "get_environment"}}]
+
+            def fake_chat(messages, tools=None, temperature=0.2):
+                seen_messages.append(messages)
+                return _msg("基于已有轨迹的最终报告")
+
+            with (
+                mock.patch.object(agent_module, "build_tools", return_value=(FakeExecutor(), schema)),
+                mock.patch.object(llm_module, "chat", fake_chat),
+            ):
+                report = run_agent(ws.root, max_steps=1, batch=True)
+
+            self.assertIn("older accepted round", seen_messages[0][1]["content"])
+            self.assertIn("已有轨迹", seen_messages[0][1]["content"])
+            self.assertEqual(report, "基于已有轨迹的最终报告")
+
+    def test_existing_trajectory_does_not_hide_unresolved_failed_bench(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = _make_workspace(tmp)
+            ws.record({"accepted": True, "change": "older accepted round"})
+            candidate = "def launch(*a):\n    return 1\n"
+
+            class FakeExecutor:
+                def call(self, name, arguments):
+                    if name == "bench_kernel":
+                        return json.dumps({"ok": False, "status": "compile_error"})
+                    return "{}"
+
+            schema = [{"type": "function", "function": {"name": "bench_kernel"}}]
+            responses = [
+                _msg(None, [_call("bench_kernel", json.dumps({"source": candidate}))]),
+                _msg("最终报告：新候选已经成功。"),
+                _msg("最终报告：新候选已经成功。"),
+                _msg("最终报告：新候选已经成功。"),
+                _msg("最终报告：新候选已经成功。"),
+            ]
+            index = {"i": 0}
+
+            def fake_chat(messages, tools=None, temperature=0.2):
+                response = responses[index["i"]]
+                index["i"] += 1
+                return response
+
+            with (
+                mock.patch.object(agent_module, "build_tools", return_value=(FakeExecutor(), schema)),
+                mock.patch.object(llm_module, "chat", fake_chat),
+            ):
+                report = run_agent(ws.root, max_steps=5, batch=True)
+
+            self.assertNotIn("新候选已经成功", report)
+            self.assertIn("已有权威轨迹仍可分析", report)
+            status = json.loads(
+                (ws.root / "agent-status.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(status["state"], "complete_with_warning")
+            self.assertTrue(status["evidenceReady"])
+            self.assertTrue(status["warning"])
+
+
+    def test_step_limit_ignores_compile_only_candidate_when_prior_trajectory_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = _make_workspace(tmp)
+            ws.record({"accepted": True, "change": "completed round"})
+            candidate = "def launch(*a):\n    return 1\n"
+
+            class FakeExecutor:
+                def call(self, name, arguments):
+                    return json.dumps({"ok": True, "stage": "run"})
+
+            schema = [{"type": "function", "function": {"name": "compile_kernel"}}]
+            response = _msg(None, [_call(
+                "compile_kernel",
+                json.dumps({"source": candidate}),
+            )])
+            with (
+                mock.patch.object(agent_module, "build_tools", return_value=(FakeExecutor(), schema)),
+                mock.patch.object(llm_module, "chat", return_value=response),
+            ):
+                report = run_agent(ws.root, max_steps=1, batch=True)
+
+            self.assertIn("尚未完成 benchmark", report)
+            self.assertIn("已有权威轨迹仍可分析", report)
+            status = json.loads(
+                (ws.root / "agent-status.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(status["state"], "complete_with_warning")
+            self.assertTrue(status["evidenceReady"])
+            self.assertTrue(status["warning"])
+    def test_existing_trajectory_does_not_hide_failed_accept_attempt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = _make_workspace(tmp)
+            ws.record({"accepted": True, "change": "older accepted round"})
+            candidate = "def launch(*a):\n    return 1\n"
+
+            class FakeExecutor:
+                def call(self, name, arguments):
+                    if name == "accept_candidate":
+                        return "✗ evaluator unavailable"
+                    return "{}"
+
+            schema = [{"type": "function", "function": {"name": "accept_candidate"}}]
+            responses = [
+                _msg(None, [_call("accept_candidate", json.dumps({"source": candidate}))]),
+                _msg("最终报告：新候选已经成功。"),
+                _msg("最终报告：新候选已经成功。"),
+                _msg("最终报告：新候选已经成功。"),
+                _msg("最终报告：新候选已经成功。"),
+            ]
+            index = {"i": 0}
+
+            def fake_chat(messages, tools=None, temperature=0.2):
+                response = responses[index["i"]]
+                index["i"] += 1
+                return response
+
+            with (
+                mock.patch.object(agent_module, "build_tools", return_value=(FakeExecutor(), schema)),
+                mock.patch.object(llm_module, "chat", fake_chat),
+            ):
+                report = run_agent(ws.root, max_steps=5, batch=True)
+
+            self.assertNotIn("新候选已经成功", report)
+            self.assertIn("未完成 accept_candidate 权威裁决", report)
+
+    def test_existing_trajectory_does_not_hide_invalid_accept_arguments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = _make_workspace(tmp)
+            ws.record({"accepted": True, "change": "older accepted round"})
+
+            class FakeExecutor:
+                def call(self, name, arguments):
+                    return "{}"
+
+            schema = [{"type": "function", "function": {"name": "accept_candidate"}}]
+            responses = [
+                _msg(None, [_call("accept_candidate", "[]")]),
+                _msg("最终报告：新候选已经成功。"),
+                _msg("最终报告：新候选已经成功。"),
+                _msg("最终报告：新候选已经成功。"),
+                _msg("最终报告：新候选已经成功。"),
+            ]
+            index = {"i": 0}
+
+            def fake_chat(messages, tools=None, temperature=0.2):
+                response = responses[index["i"]]
+                index["i"] += 1
+                return response
+
+            with (
+                mock.patch.object(agent_module, "build_tools", return_value=(FakeExecutor(), schema)),
+                mock.patch.object(llm_module, "chat", fake_chat),
+            ):
+                report = run_agent(ws.root, max_steps=5, batch=True)
+
+            self.assertNotIn("新候选已经成功", report)
+            self.assertIn("未完成 accept_candidate 权威裁决", report)
+
+    def test_trajectory_tail_keeps_complete_json_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "trajectory.jsonl"
+            first = json.dumps({"change": "a" * 80})
+            second = json.dumps({"change": "b" * 20})
+            oversized = json.dumps({"change": "c" * 200})
+            path.write_text(
+                f"{first}\n{second}\n{oversized}\nnot-json\n",
+                encoding="utf-8",
+            )
+
+            tail = agent_module._tail_complete_lines(path, max_chars=len(second) + 1)
+
+            self.assertEqual(tail, second)
+            self.assertEqual(json.loads(tail)["change"], "b" * 20)
+
+    def test_existing_unrelated_trajectory_does_not_drop_pending_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = _make_workspace(tmp)
+            candidate = "def launch(*a):\n    return 1\n"
+            (ws.root / "pending_candidate.py").write_text(candidate, encoding="utf-8")
+            ws.record({"accepted": False, "change": "unrelated non-batch round"})
+            calls = []
+
+            class FakeExecutor:
+                def call(self, name, arguments):
+                    calls.append((name, arguments))
+                    if name == "accept_candidate":
+                        ws.record({"accepted": False, "change": arguments.get("change")})
+                        return json.dumps({"accepted": False, "reason": "below_threshold"})
+                    return json.dumps({"device": "test"})
+
+            schema = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("get_environment", "accept_candidate")
+            ]
+            response = _msg(None, [_call("get_environment", "{}")])
+            with (
+                mock.patch.object(agent_module, "build_tools", return_value=(FakeExecutor(), schema)),
+                mock.patch.object(llm_module, "chat", return_value=response),
+            ):
+                run_agent(ws.root, max_steps=1, batch=True)
+
+            self.assertEqual(calls[0][0], "accept_candidate")
+            self.assertEqual(calls[0][1]["source"], candidate)
+            self.assertFalse((ws.root / "pending_candidate.py").exists())
+
+    def test_resumed_accept_rebuilds_goal_from_updated_best(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = _make_workspace(tmp)
+            (ws.root / "baseline.py").write_text(
+                "def launch(*a):\n    pass\n", encoding="utf-8"
+            )
+            candidate = "def launch(*a):\n    return 1\n"
+            (ws.root / "pending_candidate.py").write_text(candidate, encoding="utf-8")
+            seen_messages = []
+
+            class FakeExecutor:
+                def call(self, name, arguments):
+                    if name == "accept_candidate":
+                        ws.best_path.write_text(arguments["source"], encoding="utf-8")
+                        ws.record({"accepted": True, "change": arguments.get("change")})
+                        return json.dumps({"accepted": True, "reason": "improved"})
+                    return "{}"
+
+            schema = [{"type": "function", "function": {"name": "accept_candidate"}}]
+
+            def fake_chat(messages, tools=None, temperature=0.2):
+                seen_messages.append(messages)
+                return _msg("基于恢复后 best 的最终报告")
+
+            with (
+                mock.patch.object(agent_module, "build_tools", return_value=(FakeExecutor(), schema)),
+                mock.patch.object(llm_module, "chat", fake_chat),
+            ):
+                report = run_agent(ws.root, max_steps=1, batch=True)
+
+            goal = seen_messages[0][1]["content"]
+            incumbent_section = goal.split(
+                "当前 best.py incumbent 源码：", 1
+            )[1].split("工作区里有", 1)[0]
+            baseline_section = goal.split("原始 baseline.py 源码：", 1)[1]
+            self.assertIn(candidate, incumbent_section)
+            self.assertNotIn("pass", incumbent_section)
+            self.assertIn("pass", baseline_section)
+            self.assertEqual(report, "基于恢复后 best 的最终报告")
+
 
 
 # ---------------------------------------------------------------------------

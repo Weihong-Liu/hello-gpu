@@ -72,20 +72,23 @@ INTAKE_GOAL = """\
 
 
 BATCH_GOAL_PREFIX = """\
-【非交互批次模式】工作区已预置 task.json / reference.py / best.py（baseline）。
-禁止调用 ask_user；不要向用户提问。直接按优化闭环执行：
-get_environment → measure_peak → 对 baseline 调 profile_kernel（必要时 read_reference）
+【非交互批次模式】工作区已预置 task.json / reference.py / best.py。
+best.py 是当前 incumbent；原始 baseline.py 源码会随目标一起提供。禁止调用 ask_user 或
+run_code；不要向用户提问。直接按优化闭环执行：
+get_environment → measure_peak → 对当前 best.py 调 profile_kernel（必要时 read_reference）
 → 迭代：compile_kernel → bench_kernel →（换机制时）profile_kernel → accept_candidate
 → 收敛后给出中文最终报告。
 
-纪律：性能数字只认 bench_kernel / accept_candidate / measure_peak；不要用 run_code 自测当结论。
-一次只改一个主要机制。vector_add 可优先尝试增大 block_size 或调整 num_warps。
+纪律：性能数字只认 bench_kernel / accept_candidate / measure_peak。compile_kernel 失败时可修改
+源码后重新编译；候选只有在 bench_kernel 返回 `ok=true` 后才进入 pending 状态。此后必须用
+字节完全相同的 source 完成必要的 profile 与 accept_candidate 裁决，在裁决完成前禁止生成
+下一个候选。一次只改一个主要机制；vector_add 可优先尝试增大 block_size 或调整 num_warps。
 
 """
 
 
 def build_goal(workspace: "Workspace", *, batch: bool = False) -> str:
-    """从工作区的 task.json + baseline 推导具体优化目标。"""
+    """从 task.json 与当前 best.py incumbent 推导具体优化目标。"""
     try:
         task = workspace.task()
     except Exception as error:  # noqa: BLE001
@@ -95,22 +98,31 @@ def build_goal(workspace: "Workspace", *, batch: bool = False) -> str:
     shape = task.get("shape") or {
         k: v for k, v in (task.get("dimensions") or {}).items()
     }
-    baseline = ""
+    incumbent = ""
     try:
-        baseline = workspace.best_path.read_text(encoding="utf-8")
+        incumbent = workspace.best_path.read_text(encoding="utf-8")
     except OSError:
-        baseline = "（未找到 baseline）"
+        incumbent = "（未找到 best.py incumbent）"
+    try:
+        original_baseline = (workspace.root / "baseline.py").read_text(encoding="utf-8")
+    except OSError:
+        original_baseline = "（未找到原始 baseline.py）"
 
     body = (
         "请优化下面这个算子，走通优化闭环并给出报告。\n\n"
         f"算子描述：{description}\n"
         f"目标 shape：{shape}\n"
         f"语言：{task.get('language', '未知')}\n\n"
-        f"当前 baseline 源码：\n{baseline}\n\n"
+        f"当前 best.py incumbent 源码：\n{incumbent}\n\n"
         "工作区里有 task.json（任务合同）和 reference.py（正确性裁判）。"
         "用 measure_peak 测硬件、profile_kernel 定方向，"
         "迭代时分步调用 compile_kernel → bench_kernel → accept_candidate。"
     )
     if batch:
-        return BATCH_GOAL_PREFIX + body
+        return (
+            BATCH_GOAL_PREFIX
+            + body
+            + f"\n\n原始 baseline.py 源码：\n{original_baseline}\n"
+            + "若轨迹或 benchmark 未提供原始 baseline 性能数字，不要自行编造加速比。"
+        )
     return body
