@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -40,6 +41,59 @@ class ToolExecutorTest(unittest.TestCase):
 
         ex.register("boom", "会炸", boom)
         self.assertIn("执行出错", ex.call("boom", {}))
+
+
+class LLMRequestConfigTest(unittest.TestCase):
+    @staticmethod
+    def _response():
+        message = SimpleNamespace(content="READY", tool_calls=None)
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    def test_default_extra_body_disables_qwen_thinking(self) -> None:
+        with (
+            mock.patch.object(
+                llm_module,
+                "_model_config",
+                return_value=("openai/DeepSeek-V4-Flash", "https://example.invalid/v1"),
+            ),
+            mock.patch.object(
+                llm_module.litellm,
+                "completion",
+                return_value=self._response(),
+            ) as completion,
+            mock.patch.dict(os.environ, {}, clear=False),
+        ):
+            os.environ.pop("KERNEL_AGENT_EXTRA_BODY", None)
+            llm_module.chat([{"role": "user", "content": "hello"}])
+
+        self.assertEqual(
+            completion.call_args.kwargs["extra_body"],
+            {"enable_thinking": False},
+        )
+
+    def test_explicit_extra_body_replaces_default_for_official_deepseek(self) -> None:
+        official_body = {"thinking": {"type": "disabled"}}
+        with (
+            mock.patch.object(
+                llm_module,
+                "_model_config",
+                return_value=("deepseek/deepseek-v4-flash", "https://api.deepseek.com"),
+            ),
+            mock.patch.object(
+                llm_module.litellm,
+                "completion",
+                return_value=self._response(),
+            ) as completion,
+            mock.patch.dict(
+                os.environ,
+                {"KERNEL_AGENT_EXTRA_BODY": json.dumps(official_body)},
+                clear=False,
+            ),
+        ):
+            llm_module.chat([{"role": "user", "content": "hello"}])
+
+        self.assertEqual(completion.call_args.kwargs["extra_body"], official_body)
+        self.assertNotIn("enable_thinking", completion.call_args.kwargs["extra_body"])
 
 
 # ---------------------------------------------------------------------------
