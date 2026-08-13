@@ -66,6 +66,29 @@ SEED="${SEED:-20260716}"
 BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hello-gpu-chapter8-profile.XXXXXX")"
 HIP_BINARY="${BUILD_DIR}/vector_add_hip"
 
+# When profiling Triton kernels we must trace the Python interpreter that
+# imports torch.  Some environments (e.g. pip-installed torch ROCm wheels)
+# bundle their own ROCm SDK with a matching rocprofv3; using that tool avoids
+# mixing the bundled ROCm runtime with a system ROCm tool of a different
+# version (which fails with missing symbols / double tool registration).
+TRITON_ROCPROFV3=""
+TRITON_SDK_ROOT=""
+if [[ "${TRITON_PROFILE_MODE}" == "direct" ]]; then
+    if bundled_sdk="$(
+        python -c 'import importlib.util, pathlib, sys
+spec = importlib.util.find_spec("rocm_sdk")
+if spec is not None and spec.origin:
+    sdk_root = pathlib.Path(spec.origin).resolve().parent.parent / "_rocm_sdk_core"
+    if (sdk_root / "bin" / "rocprofv3").is_file() and (sdk_root / "lib").is_dir():
+        sys.stdout.write(str(sdk_root))
+' 2>/dev/null
+    )" && [[ -n "${bundled_sdk}" ]]; then
+        TRITON_SDK_ROOT="${bundled_sdk}"
+        TRITON_ROCPROFV3="${TRITON_SDK_ROOT}/bin/rocprofv3"
+        echo "Triton profiling uses the Python environment's bundled ROCm SDK rocprofv3: ${TRITON_ROCPROFV3}"
+    fi
+fi
+
 cleanup() {
     rm -rf "${BUILD_DIR}"
 }
@@ -98,6 +121,25 @@ profile_command() {
     shift
     echo "profiling ${label}"
     rocprofv3 \
+        --kernel-trace \
+        --output-directory "${PROFILE_DIR}" \
+        --output-file "${label}" \
+        --output-format csv \
+        -- "$@" \
+        2>&1 | tee "${LOG_DIR}/profile_${label}.log"
+}
+
+profile_triton_command() {
+    local label="$1"
+    shift
+    local -a tool=( rocprofv3 )
+    local -a env_prefix=( )
+    if [[ -n "${TRITON_ROCPROFV3}" ]]; then
+        tool=( "${TRITON_ROCPROFV3}" "--rocm-root" "${TRITON_SDK_ROOT}" )
+        env_prefix=( env "LD_LIBRARY_PATH=${TRITON_SDK_ROOT}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" )
+    fi
+    echo "profiling ${label}"
+    "${env_prefix[@]}" "${tool[@]}" \
         --kernel-trace \
         --output-directory "${PROFILE_DIR}" \
         --output-file "${label}" \
@@ -142,7 +184,7 @@ fi
 if ((triton_precheck_passed != 0)); then
     if [[ "${TRITON_PROFILE_MODE}" == "direct" ]]; then
         for version in t0 t1; do
-            if ! profile_command "triton-${version}" \
+            if ! profile_triton_command "triton-${version}" \
                 python "${SCRIPT_DIR}/vector_add_triton.py" \
                 --version "${version}" \
                 --size "${SIZE}" \
