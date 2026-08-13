@@ -66,6 +66,40 @@ SEED="${SEED:-20260716}"
 BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hello-gpu-chapter8-profile.XXXXXX")"
 HIP_BINARY="${BUILD_DIR}/vector_add_hip"
 
+# Triton must be profiled by a rocprofv3 compatible with the ROCm runtime
+# loaded by the active Python. Prefer an environment-bundled TheRock SDK;
+# otherwise accept a system tool only when its ROCm release line matches
+# torch.version.hip.
+TRITON_ROCPROFV3=""
+TRITON_ROCM_ROOT=""
+TRITON_LIBRARY_PATH=""
+TRITON_ROCPROF_KIND=""
+TRITON_ROCPROF_REASON=""
+TRITON_TORCH_HIP=""
+TRITON_ROCPROF_ROCM=""
+if [[ "${TRITON_PROFILE_MODE}" == "direct" ]]; then
+    mapfile -t rocprof_fields < <(
+        python "${SCRIPT_DIR}/resolve_rocprofv3.py" --format lines
+    )
+    if (( ${#rocprof_fields[@]} != 8 )); then
+        echo "rocprof resolver returned ${#rocprof_fields[@]} fields; expected 8" >&2
+        exit 1
+    fi
+    rocprof_available="${rocprof_fields[0]}"
+    TRITON_ROCPROF_KIND="${rocprof_fields[1]}"
+    TRITON_ROCPROFV3="${rocprof_fields[2]}"
+    TRITON_ROCM_ROOT="${rocprof_fields[3]}"
+    TRITON_LIBRARY_PATH="${rocprof_fields[4]}"
+    TRITON_TORCH_HIP="${rocprof_fields[5]}"
+    TRITON_ROCPROF_ROCM="${rocprof_fields[6]}"
+    TRITON_ROCPROF_REASON="${rocprof_fields[7]}"
+    if [[ "${rocprof_available}" != "1" ]]; then
+        echo "No compatible rocprofv3 for Triton: ${TRITON_ROCPROF_REASON}" >&2
+        exit 1
+    fi
+    echo "Triton profiling resolver: kind=${TRITON_ROCPROF_KIND} tool=${TRITON_ROCPROFV3} root=${TRITON_ROCM_ROOT} torch_hip=${TRITON_TORCH_HIP} rocprof_rocm=${TRITON_ROCPROF_ROCM}"
+fi
+
 cleanup() {
     rm -rf "${BUILD_DIR}"
 }
@@ -98,6 +132,30 @@ profile_command() {
     shift
     echo "profiling ${label}"
     rocprofv3 \
+        --kernel-trace \
+        --output-directory "${PROFILE_DIR}" \
+        --output-file "${label}" \
+        --output-format csv \
+        -- "$@" \
+        2>&1 | tee "${LOG_DIR}/profile_${label}.log"
+}
+
+profile_triton_command() {
+    local label="$1"
+    shift
+    local -a tool=(
+        "${TRITON_ROCPROFV3}"
+        "--rocm-root" "${TRITON_ROCM_ROOT}"
+    )
+    local -a env_prefix=( )
+    if [[ -n "${TRITON_LIBRARY_PATH}" ]]; then
+        env_prefix=(
+            env
+            "LD_LIBRARY_PATH=${TRITON_LIBRARY_PATH}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+        )
+    fi
+    echo "profiling ${label} with ${TRITON_ROCPROF_KIND} rocprofv3"
+    "${env_prefix[@]}" "${tool[@]}" \
         --kernel-trace \
         --output-directory "${PROFILE_DIR}" \
         --output-file "${label}" \
@@ -142,7 +200,7 @@ fi
 if ((triton_precheck_passed != 0)); then
     if [[ "${TRITON_PROFILE_MODE}" == "direct" ]]; then
         for version in t0 t1; do
-            if ! profile_command "triton-${version}" \
+            if ! profile_triton_command "triton-${version}" \
                 python "${SCRIPT_DIR}/vector_add_triton.py" \
                 --version "${version}" \
                 --size "${SIZE}" \
@@ -175,6 +233,11 @@ fi
     echo "gpu_arch=${GPU_ARCH}"
     echo "grid=${GRID:-auto}"
     echo "triton_profile_mode=${TRITON_PROFILE_MODE}"
+    echo "triton_rocprof_kind=${TRITON_ROCPROF_KIND:-unavailable}"
+    echo "triton_rocprof_executable=${TRITON_ROCPROFV3:-unavailable}"
+    echo "triton_rocm_root=${TRITON_ROCM_ROOT:-unavailable}"
+    echo "triton_torch_hip=${TRITON_TORCH_HIP:-unavailable}"
+    echo "triton_rocprof_rocm=${TRITON_ROCPROF_ROCM:-unavailable}"
 } > "${PROFILE_DIR}/profile_config.env"
 
 profile_summary_incomplete=0
