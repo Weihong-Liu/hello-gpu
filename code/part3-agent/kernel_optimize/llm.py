@@ -90,15 +90,16 @@ def chat(
     if tools:
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
-    # Qwen3 / 硅基流动等：默认 thinking 会占满 token 且 content 为空，关掉才能稳定 tool-call。
+    # 默认关闭 Radeon Cloud / Qwen 风格的 thinking，避免占满 token 且 content 为空。
+    # 显式 KERNEL_AGENT_EXTRA_BODY 会整体替换默认值：DeepSeek 官方接口使用
+    # {"thinking": {"type": "disabled"}}，不能与 enable_thinking 混发。
     extra_body: dict[str, Any] = {"enable_thinking": False}
-    # 允许 env 覆盖：KERNEL_AGENT_EXTRA_BODY='{"enable_thinking":true}'
     raw_extra = os.environ.get("KERNEL_AGENT_EXTRA_BODY", "").strip()
     if raw_extra:
         try:
             parsed = json.loads(raw_extra)
             if isinstance(parsed, dict):
-                extra_body.update(parsed)
+                extra_body = parsed
         except json.JSONDecodeError:
             pass
     kwargs["extra_body"] = extra_body

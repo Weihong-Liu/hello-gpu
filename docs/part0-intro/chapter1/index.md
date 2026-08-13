@@ -342,7 +342,7 @@ PyTorch 跑通只能证明框架层 OK；要真正走到 GPU 编程，还得能�
 ::: figure fig-min-hip-flow
 ```mermaid
 flowchart TD
-    A[Host 准备输入] --> B[Device 分配显存]
+    A[Host（CPU 侧）准备输入] --> B[Device（GPU 侧）分配显存]
     B --> C[Host 到 Device 拷贝]
     C --> D[启动 HIP Kernel]
     D --> E[Device 到 Host 拷贝]
@@ -351,6 +351,15 @@ flowchart TD
 ```
 
 最小 HIP 程序的基本路径
+:::
+
+::: tip 第一次看到这些词？
+- **Host（主机）**：CPU 及其使用的系统内存，负责准备输入、发起 GPU 任务和检查结果。示例中的 `h_a`、`h_b`、`h_c` 都是 Host 侧数据。
+- **Device（设备）**：这里指 GPU 及其显存。示例中的 `d_a`、`d_b`、`d_c` 都指向 Device 侧显存；HIP Runtime 和驱动是 Host 程序与 GPU 之间的软件桥梁。
+- **Host 到 Device（H2D）拷贝**：把输入从系统内存传到 GPU 显存；**Device 到 Host（D2H）拷贝**则把计算结果传回系统内存。两者在这里都由 `hipMemcpy` 完成。
+- **HIP Kernel**：在 GPU 上并行执行的计算函数。它只负责计算，**不包含前后的数据拷贝**；本例的 kernel 只执行 `c[idx] = a[idx] + b[idx]`。
+
+Kernel 启动后，Host 不一定会原地等待。示例中的 `hipDeviceSynchronize()` 用来等 GPU 计算完成，再把结果拷回 Host。更复杂的异步执行和同步方式将在后文遇到时展开。
 :::
 
 如 @fig-min-hip-flow 所示，这是几乎所有 HIP / CUDA 程序的最小骨架——分配显存、拷数据、起 kernel、拷回结果、校验、释放。后面写更复杂的算子时，外壳依然是这个样子，变的只是 kernel 内部那几行。把这个骨架刻在脑子里，后面学起来会轻松很多。

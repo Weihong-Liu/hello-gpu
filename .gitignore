@@ -33,10 +33,6 @@ bak/
 # WebP 由 scripts/png-to-webp.mjs 在构建时自动生成，不进仓库
 docs/**/images/**/*.webp
 
-# notebooks：只保留空目录，内容暂不上传
-notebooks/*
-!notebooks/.gitkeep
-
 # 杂散的重复目录，不进仓库
 code/part3-agent 2/
 
