@@ -1,0 +1,40 @@
+[project]
+name = "part0-intro"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.4.4",
+    "rocm==7.13.0",
+    "rocm-sdk-core==7.13.0",
+    "rocm-sdk-devel==7.13.0",
+    "rocm-sdk-libraries-gfx120x-all==7.13.0",
+    "torch==2.11.0+rocm7.13.0",
+    "triton==3.6.0+rocm7.13.0",
+    "matplotlib>=3.9",
+]
+
+[[tool.uv.index]]
+name = "rocm-amd"
+url = "https://repo.amd.com/rocm/whl/gfx120X-all/"
+explicit = true
+
+[[tool.uv.index]]
+name = "pypi-mirror"
+url = "https://mirrors.bfsu.edu.cn/pypi/web/simple"
+default = true
+
+[tool.uv.sources]
+rocm = { index = "rocm-amd" }
+rocm-sdk-core = { index = "rocm-amd" }
+rocm-sdk-devel = { index = "rocm-amd" }
+rocm-sdk-libraries-gfx120x-all = { index = "rocm-amd" }
+rocm-core = { index = "rocm-amd" }
+rocm-smi-lib = { index = "rocm-amd" }
+torch = { index = "rocm-amd" }
+triton = { index = "rocm-amd" }
+
+[dependency-groups]
+notebook = [
+    "ipykernel>=7.3.0",
+    "jupyterlab>=4.6.2",
+]

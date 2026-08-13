@@ -2,14 +2,14 @@
 # 为某一篇（part）建立独立的 ROCm uv 开发环境。
 #
 # 设计：每开一篇就跑一次本脚本，得到 code/partN-*/.venv，篇与篇之间环境隔离。
-#   - 实验机 AMD-AIMAX395 上跑（不在本机 commit）
-#   - 不带 --part 默认 part0-preface
+#   - 实验机只跑实验，不在实验机上 commit
+#   - 不带 --part 默认 part0-intro
 #
 # 用法：
-#   bash scripts/bootstrap-rocm-env.sh                              # part0-preface
-#   bash scripts/bootstrap-rocm-env.sh --part part1-hardware-rocm
-#   bash scripts/bootstrap-rocm-env.sh --part part0-preface --region global
-#   bash scripts/bootstrap-rocm-env.sh --part part1-hardware-rocm --interactive
+#   bash scripts/bootstrap-rocm-env.sh                              # part0-intro
+#   bash scripts/bootstrap-rocm-env.sh --part part1-profiling
+#   bash scripts/bootstrap-rocm-env.sh --part part0-intro --region global
+#   bash scripts/bootstrap-rocm-env.sh --part part1-profiling --interactive
 
 set -euo pipefail
 
@@ -18,11 +18,11 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ROCM_UV_ENV="${SCRIPT_DIR}/rocm-uv-env.sh"
 
 # ── 当前 baseline（升级时只改这里） ──────────────────────────────
-ROCM_VERSION="7.12.0"
-GPU_ARCH="gfx1151"
+ROCM_VERSION="7.13.0"
+GPU_ARCH="gfx120X-all"
 INSTALL_MODE_FLAG="--full"   # 或 --minimal
 DEFAULT_REGION="cn"
-DEFAULT_PART="part0-preface"
+DEFAULT_PART="part0-intro"
 # ────────────────────────────────────────────────────────────
 
 PART="$DEFAULT_PART"

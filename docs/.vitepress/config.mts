@@ -1,11 +1,19 @@
 import { defineConfig } from 'vitepress'
 import footnote from 'markdown-it-footnote'
-import mathjax3 from 'markdown-it-mathjax3'
 import figurePlugin from './markdown-figures.mjs'
 import { navItems, sidebar } from './outline.mjs'
 
 function encodeMermaid(value: string) {
   return encodeURIComponent(value)
+}
+
+function prepareMathSvgTemplate(value: string) {
+  return value
+    .replace(/^<mjx-container v-pre /, '<mjx-container ')
+    .replace(/ viewbox="([^"]+)"/gi, (_, viewBox: string) =>
+      ` :viewBox="'${viewBox}'"`,
+    )
+    .replace(/&amp;(lt|gt|amp);/g, '&$1;')
 }
 
 const isEdgeOne = process.env.EDGEONE === '1'
@@ -14,28 +22,39 @@ const baseConfig = isEdgeOne ? '/' : '/hello-gpu/'
 export default defineConfig({
   lang: 'zh-CN',
   title: 'Hello GPU',
-  description: '从硬件到智能体的 AI 基础设施实践教程（单卡 AMD GPU 视角；多卡见 hello-mlsys，平台层见 hello-ai-infra-platform）',
+  description: 'GPU 算子优化入门 + Agent 自动化（AMD Radeon RX 9070 XT + ROCm 7.13 / 原生 Ubuntu 24.04 实测）',
   base: baseConfig,
 
   cleanUrls: true,
 
-  srcExclude: ['part7-agent/**'],
-
   vue: {
     template: {
       compilerOptions: {
-        // mathjax3 emits <mjx-container> / <mjx-...> custom elements; keep
-        // Vue from trying to resolve them as components.
         isCustomElement: (tag: string) => tag.startsWith('mjx-'),
       },
     },
   },
 
   markdown: {
+    math: true,
     config(md) {
       md.use(footnote)
-      md.use(mathjax3)
       md.use(figurePlugin)
+
+      // VitePress 2 alpha lowercases MathJax's static SVG viewBox while
+      // compiling Markdown. Bind it explicitly so Vue preserves the
+      // case-sensitive attribute and the glyph coordinate system.
+      const mathInline = md.renderer.rules.math_inline!
+      md.renderer.rules.math_inline = (tokens, idx, options, env, self) =>
+        prepareMathSvgTemplate(
+          mathInline(tokens, idx, options, env, self),
+        )
+
+      const mathBlock = md.renderer.rules.math_block!
+      md.renderer.rules.math_block = (tokens, idx, options, env, self) =>
+        prepareMathSvgTemplate(
+          mathBlock(tokens, idx, options, env, self),
+        )
 
       // 同一条脚注被多次引用时，默认会渲染成 [6]、[6:1]、[6:2] …
       // 对读者没有意义，统一只显示脚注序号，让回跳锚点照常工作。
@@ -111,7 +130,7 @@ export default defineConfig({
     ],
 
     editLink: {
-      pattern: 'https://github.com/datawhalechina/hello-gpu/blob/main/docs/:path',
+      pattern: 'https://github.com/datawhalechina/hello-gpu/blob/dev/docs/:path',
       text: '在 GitHub 上编辑此页',
     },
 

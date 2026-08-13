@@ -1,0 +1,3 @@
+experiment,implementation,dispatch_count,unique_kernel_names
+branch-divergence,wave-divergent,5,"__amd_rocclr_copyBuffer;void (anonymous namespace)::branch_kernel<((anonymous namespace)::BranchMode)1>(float const*, float*, unsigned long)"
+branch-divergence,wave-uniform,5,"__amd_rocclr_copyBuffer;void (anonymous namespace)::branch_kernel<((anonymous namespace)::BranchMode)0>(float const*, float*, unsigned long)"
