@@ -66,27 +66,38 @@ SEED="${SEED:-20260716}"
 BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hello-gpu-chapter8-profile.XXXXXX")"
 HIP_BINARY="${BUILD_DIR}/vector_add_hip"
 
-# When profiling Triton kernels we must trace the Python interpreter that
-# imports torch.  Some environments (e.g. pip-installed torch ROCm wheels)
-# bundle their own ROCm SDK with a matching rocprofv3; using that tool avoids
-# mixing the bundled ROCm runtime with a system ROCm tool of a different
-# version (which fails with missing symbols / double tool registration).
+# Triton must be profiled by a rocprofv3 compatible with the ROCm runtime
+# loaded by the active Python. Prefer an environment-bundled TheRock SDK;
+# otherwise accept a system tool only when its ROCm release line matches
+# torch.version.hip.
 TRITON_ROCPROFV3=""
-TRITON_SDK_ROOT=""
+TRITON_ROCM_ROOT=""
+TRITON_LIBRARY_PATH=""
+TRITON_ROCPROF_KIND=""
+TRITON_ROCPROF_REASON=""
+TRITON_TORCH_HIP=""
+TRITON_ROCPROF_ROCM=""
 if [[ "${TRITON_PROFILE_MODE}" == "direct" ]]; then
-    if bundled_sdk="$(
-        python -c 'import importlib.util, pathlib, sys
-spec = importlib.util.find_spec("rocm_sdk")
-if spec is not None and spec.origin:
-    sdk_root = pathlib.Path(spec.origin).resolve().parent.parent / "_rocm_sdk_core"
-    if (sdk_root / "bin" / "rocprofv3").is_file() and (sdk_root / "lib").is_dir():
-        sys.stdout.write(str(sdk_root))
-' 2>/dev/null
-    )" && [[ -n "${bundled_sdk}" ]]; then
-        TRITON_SDK_ROOT="${bundled_sdk}"
-        TRITON_ROCPROFV3="${TRITON_SDK_ROOT}/bin/rocprofv3"
-        echo "Triton profiling uses the Python environment's bundled ROCm SDK rocprofv3: ${TRITON_ROCPROFV3}"
+    mapfile -t rocprof_fields < <(
+        python "${SCRIPT_DIR}/resolve_rocprofv3.py" --format lines
+    )
+    if (( ${#rocprof_fields[@]} != 8 )); then
+        echo "rocprof resolver returned ${#rocprof_fields[@]} fields; expected 8" >&2
+        exit 1
     fi
+    rocprof_available="${rocprof_fields[0]}"
+    TRITON_ROCPROF_KIND="${rocprof_fields[1]}"
+    TRITON_ROCPROFV3="${rocprof_fields[2]}"
+    TRITON_ROCM_ROOT="${rocprof_fields[3]}"
+    TRITON_LIBRARY_PATH="${rocprof_fields[4]}"
+    TRITON_TORCH_HIP="${rocprof_fields[5]}"
+    TRITON_ROCPROF_ROCM="${rocprof_fields[6]}"
+    TRITON_ROCPROF_REASON="${rocprof_fields[7]}"
+    if [[ "${rocprof_available}" != "1" ]]; then
+        echo "No compatible rocprofv3 for Triton: ${TRITON_ROCPROF_REASON}" >&2
+        exit 1
+    fi
+    echo "Triton profiling resolver: kind=${TRITON_ROCPROF_KIND} tool=${TRITON_ROCPROFV3} root=${TRITON_ROCM_ROOT} torch_hip=${TRITON_TORCH_HIP} rocprof_rocm=${TRITON_ROCPROF_ROCM}"
 fi
 
 cleanup() {
@@ -132,13 +143,18 @@ profile_command() {
 profile_triton_command() {
     local label="$1"
     shift
-    local -a tool=( rocprofv3 )
+    local -a tool=(
+        "${TRITON_ROCPROFV3}"
+        "--rocm-root" "${TRITON_ROCM_ROOT}"
+    )
     local -a env_prefix=( )
-    if [[ -n "${TRITON_ROCPROFV3}" ]]; then
-        tool=( "${TRITON_ROCPROFV3}" "--rocm-root" "${TRITON_SDK_ROOT}" )
-        env_prefix=( env "LD_LIBRARY_PATH=${TRITON_SDK_ROOT}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" )
+    if [[ -n "${TRITON_LIBRARY_PATH}" ]]; then
+        env_prefix=(
+            env
+            "LD_LIBRARY_PATH=${TRITON_LIBRARY_PATH}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+        )
     fi
-    echo "profiling ${label}"
+    echo "profiling ${label} with ${TRITON_ROCPROF_KIND} rocprofv3"
     "${env_prefix[@]}" "${tool[@]}" \
         --kernel-trace \
         --output-directory "${PROFILE_DIR}" \
@@ -217,6 +233,11 @@ fi
     echo "gpu_arch=${GPU_ARCH}"
     echo "grid=${GRID:-auto}"
     echo "triton_profile_mode=${TRITON_PROFILE_MODE}"
+    echo "triton_rocprof_kind=${TRITON_ROCPROF_KIND:-unavailable}"
+    echo "triton_rocprof_executable=${TRITON_ROCPROFV3:-unavailable}"
+    echo "triton_rocm_root=${TRITON_ROCM_ROOT:-unavailable}"
+    echo "triton_torch_hip=${TRITON_TORCH_HIP:-unavailable}"
+    echo "triton_rocprof_rocm=${TRITON_ROCPROF_ROCM:-unavailable}"
 } > "${PROFILE_DIR}/profile_config.env"
 
 profile_summary_incomplete=0
