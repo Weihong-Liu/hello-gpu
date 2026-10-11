@@ -4,12 +4,14 @@ on:
   pull_request:
     paths:
       - 'notebooks/**'
+      - 'code/part3-agent/kernel_optimize/**'
       - 'docs/**/index.md'
       - '.github/workflows/notebook-learning.yml'
   push:
     branches: ['dev', 'main']
     paths:
       - 'notebooks/**'
+      - 'code/part3-agent/kernel_optimize/**'
       - 'docs/**/index.md'
       - '.github/workflows/notebook-learning.yml'
 
@@ -23,3 +25,4 @@ jobs:
           python-version: '3.12'
       - run: python notebooks/tools/check_notebooks.py
       - run: python -m compileall -q notebooks/common/src notebooks/tools
+      - run: python notebooks/common/tests/test_agentlab.py

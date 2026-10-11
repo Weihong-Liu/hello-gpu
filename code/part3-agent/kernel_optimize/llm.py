@@ -19,10 +19,19 @@ from typing import Any
 os.environ.setdefault("LITELLM_LOG", "ERROR")
 os.environ.setdefault("LITELLM_MODEL_COST_MAP_URL", "")
 
-import litellm  # noqa: E402
+def __getattr__(name: str) -> Any:
+    # The notebook's deterministic planner and CPU tool lessons do not need an
+    # LLM client. Keep the existing ``llm.litellm`` surface for CLI tests/callers,
+    # but load the optional client only for a real online call.
+    if name == "litellm":
+        import importlib
 
-litellm.suppress_debug_info = True
-litellm.set_verbose = False
+        client = importlib.import_module("litellm")
+        client.suppress_debug_info = True
+        client.set_verbose = False
+        globals()[name] = client
+        return client
+    raise AttributeError(name)
 
 DEFAULT_ENV_FILE = Path.home() / ".config" / "hello-gpu" / "kernel-agent.env"
 
@@ -103,5 +112,6 @@ def chat(
         except json.JSONDecodeError:
             pass
     kwargs["extra_body"] = extra_body
-    response = litellm.completion(**kwargs)
+    client = globals().get("litellm") or __getattr__("litellm")
+    response = client.completion(**kwargs)
     return response.choices[0].message

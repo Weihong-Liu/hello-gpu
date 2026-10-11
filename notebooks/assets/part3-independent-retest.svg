@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 454" role="img">
+<title>结束搜索后：固定最终实现，再独立复测</title>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#497789"/></marker></defs>
+<rect width="1240" height="454" fill="#f8faf9"/>
+<text x="24" y="40" font-family="sans-serif" font-size="25" fill="#173d4e" text-anchor="start" font-weight="normal">结束搜索后：固定最终实现，再独立复测</text>
+<text x="24" y="74" font-family="sans-serif" font-size="18" fill="#445a62" text-anchor="start" font-weight="normal">搜索时每轮对照可能变化；最终结论始终比较初始基线与固定后的最终实现。</text>
+<rect x="24" y="110" width="277" height="180" rx="9" fill="#edf4f5" stroke="#497789" stroke-width="1.5"/>
+<text x="41" y="151" font-family="sans-serif" font-size="21" fill="#173d4e" text-anchor="start" font-weight="bold">初始基线 B0</text>
+<text x="41" y="208" font-family="sans-serif" font-size="19" fill="#173d4e" text-anchor="start" font-weight="normal">整个搜索期保持固定</text>
+<text x="41" y="251" font-family="sans-serif" font-size="19" fill="#173d4e" text-anchor="start" font-weight="normal">用于最终对照</text>
+<line x1="306" y1="197" x2="323" y2="197" stroke="#497789" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="329" y="110" width="277" height="180" rx="9" fill="#edf4f5" stroke="#497789" stroke-width="1.5"/>
+<text x="346" y="151" font-family="sans-serif" font-size="21" fill="#173d4e" text-anchor="start" font-weight="bold">搜索中的当前版本</text>
+<text x="346" y="208" font-family="sans-serif" font-size="19" fill="#173d4e" text-anchor="start" font-weight="normal">接受候选才更新</text>
+<text x="346" y="251" font-family="sans-serif" font-size="19" fill="#173d4e" text-anchor="start" font-weight="normal">每轮有自己的对照</text>
+<line x1="611" y1="197" x2="628" y2="197" stroke="#497789" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="634" y="110" width="277" height="180" rx="9" fill="#edf4f5" stroke="#497789" stroke-width="1.5"/>
+<text x="651" y="151" font-family="sans-serif" font-size="21" fill="#173d4e" text-anchor="start" font-weight="bold">固定最终版本 Cfinal</text>
+<text x="651" y="208" font-family="sans-serif" font-size="19" fill="#173d4e" text-anchor="start" font-weight="normal">搜索结束后不再修改</text>
+<text x="651" y="251" font-family="sans-serif" font-size="19" fill="#173d4e" text-anchor="start" font-weight="normal">保留对应源码身份</text>
+<line x1="916" y1="197" x2="933" y2="197" stroke="#497789" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="939" y="110" width="277" height="180" rx="9" fill="#fff0db" stroke="#ad782e" stroke-width="1.5"/>
+<text x="956" y="151" font-family="sans-serif" font-size="21" fill="#173d4e" text-anchor="start" font-weight="bold">新进程配对复测</text>
+<text x="956" y="208" font-family="sans-serif" font-size="19" fill="#173d4e" text-anchor="start" font-weight="normal">B0 与 Cfinal 交替运行</text>
+<text x="956" y="251" font-family="sans-serif" font-size="19" fill="#173d4e" text-anchor="start" font-weight="normal">保留各次独立结果</text>
+<path d="M 162 299 V 345 H 1078 V 299" fill="none" stroke="#497789" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="620" y="334" font-family="sans-serif" font-size="19" fill="#173d4e" text-anchor="middle" font-weight="normal">同一份初始基线直接进入最终复测</text>
+<text x="24" y="391" font-family="sans-serif" font-size="19" fill="#173d4e" text-anchor="start" font-weight="bold">最终收益来自新一组配对结果；不把逐轮改善率相乘，也不只挑最快的一次。</text>
+<text x="24" y="428" font-family="sans-serif" font-size="18" fill="#445a62" text-anchor="start" font-weight="normal">复测若没有稳定改善，保留真实结果，并说明当前证据不足。</text>
+</svg>

@@ -16,7 +16,7 @@ __all__ = ["HIPKernel", "compile_kernel", "load_ipython_extension", "environment
 def __getattr__(name):
     # Optional teaching modules load only when a chapter asks for them. Keeping
     # their APIs under module names also avoids one large, collision-prone facade.
-    if name in {"profiling", "learning"}:
+    if name in {"profiling", "learning", "agentlab"}:
         module = import_module(f".{name}", __name__)
         globals()[name] = module
         return module

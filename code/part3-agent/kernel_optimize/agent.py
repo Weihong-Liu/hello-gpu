@@ -83,6 +83,19 @@ def _same_source(left: Any, right: Any) -> bool:
     return isinstance(left, str) and isinstance(right, str) and left == right
 
 
+def pending_protocol_error(name: str, arguments: dict[str, Any], pending_source: str | None) -> str | None:
+    """The same pending-candidate rule serves the CLI and notebook single steps."""
+    if pending_source is None:
+        return None
+    same_pending = _same_source(arguments.get("source"), pending_source)
+    if name == "accept_candidate":
+        if not same_pending:
+            return "已有完成 benchmark 的候选等待裁决；accept_candidate 必须使用字节完全相同的 source。"
+        return None
+    if name in {"bench_kernel", "profile_kernel"} and same_pending:
+        return None
+    return "已有候选等待裁决；只允许对同一 source 继续 bench/profile，或调用 accept_candidate 完成裁决。"
+
 
 
 def _file_size(path: Path) -> int:
@@ -137,6 +150,8 @@ def run_agent(
     goal: str | None = None,
     on_step: Any = None,
     batch: bool = False,
+    chat: Any = None,
+    allowed_tools: set[str] | None = None,
 ) -> str:
     """跑优化 agent，返回最终报告文本。
 
@@ -144,6 +159,8 @@ def run_agent(
     goal：用户的优化目标描述；缺省时从 task.json 推导。
     on_step(step, action, observation)：可选回调，用于打印进度。
     batch：非交互模式（ask_user 拒答并引导继续闭环）。
+    chat：可注入教学规划器；缺省时调用在线 llm.chat。
+    allowed_tools：可选工具白名单；同时限制 schema 和实际调度。
     """
     workspace = Workspace(Path(workspace_dir))
     conversation_path = workspace.root / "model-messages.jsonl"
@@ -154,6 +171,9 @@ def run_agent(
             item for item in schema
             if _tool_schema_name(item) not in _BATCH_HIDDEN_TOOLS
         ]
+    if allowed_tools is not None:
+        schema = [item for item in schema if _tool_schema_name(item) in allowed_tools]
+    chat_fn = chat if chat is not None else llm.chat
 
     trajectory_path = workspace.root / "trajectory.jsonl"
     pending_path = workspace.root / _PENDING_CANDIDATE_FILENAME
@@ -198,16 +218,18 @@ def run_agent(
     def submit_pending(step: int, change: str) -> tuple[bool, str]:
         if pending_source is None:
             return True, ""
+        if allowed_tools is not None and "accept_candidate" not in allowed_tools:
+            return False, "本次运行未开放 accept_candidate；候选保留等待裁决。"
         previous_size = _file_size(trajectory_path)
         args = {"source": pending_source, "change": change}
         if on_step:
             on_step(step, "tool:accept_candidate", None)
         observation = executor.call("accept_candidate", args)
-        if on_step:
-            on_step(step, "result:accept_candidate", observation)
         recorded = accept_was_recorded(observation, previous_size)
         if recorded:
             clear_pending()
+        if on_step:
+            on_step(step, "result:accept_candidate", observation)
         return recorded, observation
 
     def finish(
@@ -307,7 +329,7 @@ def run_agent(
             if on_step:
                 on_step(step, "nudge", None)
 
-        message = llm.chat(history, tools=schema)
+        message = chat_fn(history, tools=schema)
         append_history(_assistant_to_dict(message))
 
         tool_calls = getattr(message, "tool_calls", None)
@@ -435,34 +457,26 @@ def run_agent(
 
             if args is not None:
                 source = args.get("source")
-                pending_protocol_error = None
-                if batch and name in _BATCH_HIDDEN_TOOLS:
-                    pending_protocol_error = f"batch 模式禁止调用 {name}。"
+                pending_protocol_error_message = None
+                if allowed_tools is not None and name not in allowed_tools:
+                    pending_protocol_error_message = f"本次运行未开放工具 {name}。"
+                elif batch and name in _BATCH_HIDDEN_TOOLS:
+                    pending_protocol_error_message = f"batch 模式禁止调用 {name}。"
                 elif batch and pending_source is not None:
-                    same_pending = _same_source(source, pending_source)
-                    if name == "accept_candidate" and not same_pending:
-                        pending_protocol_error = (
-                            "已有完成 benchmark 的候选等待裁决；accept_candidate 必须使用"
-                            "字节完全相同的 source。"
-                        )
-                    elif name in {"bench_kernel", "profile_kernel"} and same_pending:
-                        pass
-                    elif name != "accept_candidate":
-                        pending_protocol_error = (
-                            "已有候选等待裁决；只允许对同一 source 继续 bench/profile，"
-                            "或调用 accept_candidate 完成裁决。"
-                        )
+                    pending_protocol_error_message = pending_protocol_error(name, args, pending_source)
 
-                if pending_protocol_error is not None:
+                if pending_protocol_error_message is not None:
                     observation = json.dumps(
                         {
                             "ok": False,
                             "stage": "pending_accept",
-                            "error": pending_protocol_error,
+                            "error": pending_protocol_error_message,
                         },
                         ensure_ascii=False,
                     )
                     pending_nudged = False
+                    if on_step:
+                        on_step(step, f"result:{name}", observation)
                 else:
                     if batch and name == "accept_candidate":
                         candidate_activity = True
@@ -475,8 +489,6 @@ def run_agent(
                     if on_step:
                         on_step(step, f"tool:{name}", None)
                     observation = executor.call(name, args)
-                    if on_step:
-                        on_step(step, f"result:{name}", observation)
 
                     payload = _json_object(observation)
                     if (
@@ -502,6 +514,8 @@ def run_agent(
                         and accept_was_recorded(observation, trajectory_size_before)
                     ):
                         clear_pending()
+                    if on_step:
+                        on_step(step, f"result:{name}", observation)
 
             append_history(
                 {

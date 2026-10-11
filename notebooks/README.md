@@ -2,7 +2,7 @@
 
 在云环境中打开一章，读一段解释，看图理解线程与数据，修改 kernel，再运行并观察结果。这套 Notebook 参考 d2l 的组织方式：当前学习的算法留在章节中，重复的编译、计时、画图和记录放在公共包 `hello_gpu` 中。
 
-当前提供 **Part 0–2 的 9 章（第 0–8 章）**。每章沿用对应教程的标题和小节顺序，按「解释 → 图 → 短代码 → 观察 → 练习」展开，每个章节目录只放一个 Notebook。
+当前提供 **第 0–8 章和 Part 3 的第 14–17 章，共 13 章**。每章沿用对应教程的标题和小节顺序，按「解释 → 图 → 短代码 → 观察 → 练习」展开，每个章节目录只放一个 Notebook。
 
 ## 在已准备好的云环境中学习
 
@@ -25,6 +25,10 @@
 | Part 1：Profiling 实战 | [第 6 章 用 rocprof 找到慢在哪里](part1-profiling/chapter6/chapter6.ipynb) | 比较线程分工、采集 trace、扫描每线程工作量 |
 | Part 1：Profiling 实战 | [第 7 章 读懂 Roofline 图](part1-profiling/chapter7/chapter7.ipynb) | 计算算法工作量，画当前测量与参考线 |
 | Part 2：经典算子与 Kernel 实战 | [第 8 章 Element-Wise：逐元素算子](part2-kernels/chapter8/chapter8.ipynb) | 比较 HIP 与 Triton 的受控修改，记录负结果 |
+| Part 3：算子优化 Agent | [第 14 章 Agent 入门](part3-agent/chapter14/chapter14.ipynb) | 手动注册工具、构造调用、处理错误与反馈 |
+| Part 3：算子优化 Agent | [第 15 章 工具封装](part3-agent/chapter15/chapter15.ipynb) | 修改可见 Triton kernel，检查答案、计时与配对裁决 |
+| Part 3：算子优化 Agent | [第 16 章 Agent 设计](part3-agent/chapter16/chapter16.ipynb) | 逐步执行候选闭环，观察状态与接受判定 |
+| Part 3：算子优化 Agent | [第 17 章 多轮优化实战](part3-agent/chapter17/chapter17.ipynb) | 自动尝试、选择一轮查看证据、独立复测与在线模型选读 |
 
 章节与正文的映射保存在 [chapters.json](chapters.json)。想先体验完整流程，可以从第 4 章开始，再回到前面的线程与数据章节。
 
@@ -53,6 +57,16 @@ torch.testing.assert_close(c, a + b)
 
 当前调用约定是 `binary_f32`：两个同形状、连续的 FP32 GPU 输入，一个同形状输出，以及元素个数 `int n`。它负责前向计算，不自动推断任意 kernel 的输出形状，也没有提供 autograd 或 `torch.compile` 规则。
 
+## Part 3 的学习方式
+
+四章使用同一个向量加法任务，先手动调用工具，再搭建循环，最后观察多轮尝试。kernel 源码、工具注册和最小循环留在章节中；`hello_gpu.agentlab` 负责结果卡、真实样本图和记录浏览，评测与接受规则复用 `code/part3-agent/`。请保留仓库中的这个后端目录；仅复制 `notebooks/` 不包含完整的 Part 3 运行代码。
+
+第 14 章的工具调用例子不要求 GPU。第 15–17 章使用 ROCm PyTorch 与 Triton，结果来自当前设备，不预设提速。任务使用 FP16 的三 Tensor 输入/输出约定，与前面 HIP `binary_f32` 入口分别定义。
+
+默认运行全部单元使用手写动作和教学策略，不调用在线模型。第 17 章 17.7 节将在线实验分成配置、检查和运行三步，逐项说明 `KERNEL_AGENT_MODEL`、`KERNEL_AGENT_API_BASE`、`KERNEL_AGENT_API_KEY` 和服务扩展参数的填写方法，并提供 OpenAI 兼容接口与 DeepSeek 的配置示例。密钥通过隐藏输入框填入当前 Python 内核，重启内核后重新配置，不写进 Notebook。在线入口默认关闭，启用前需提供 LiteLLM；Part 3 的环境声明包含这项依赖，第 17 章也给出了缺少依赖时的安装方法。
+
+结果记录在 `notebooks/.artifacts/agent/` 下，每次创建实验使用独立目录。失败候选、每次评测输入和完整返回都保留；学习页面先展示正确性、时间、裁决和原因，详情可展开。公开 Notebook 保持空输出，真实执行副本由维护入口单独保存。
+
 ## 调整实验参数
 
 输入规模、block 大小、预热次数和重复次数集中在 [config.toml](config.toml)。章节用 `gpu.settings()` 读取配置；修改后重新运行相关单元，让输入、正确性检查与测量使用同一组条件。
@@ -70,6 +84,7 @@ notebooks/
 ├── part0-intro/chapter0–chapter4/   # 每章一个 Notebook
 ├── part1-profiling/chapter5–chapter7/
 ├── part2-kernels/chapter8/
+├── part3-agent/chapter14–chapter17/
 ├── assets/                         # 可编辑图源与 PNG 转换缓存
 ├── config.toml
 ├── chapters.json
@@ -82,7 +97,7 @@ notebooks/
 
 已预装依赖的学习环境无需执行本节。维护者需要自行准备 GPU 环境时，可以参考[正文第 1 章](../docs/part0-intro/chapter1/index.md)与[附录 B](../docs/appendix/appendix-b-switch-gpu/index.md)。现有环境配置工具支持按实际 GPU 架构安装 Part 0–2 的依赖；配置完成后可用 `tools/serve.sh` 启动 Jupyter，或用 `tools/connect.py` 建立连接。
 
-生成源位于 `tools/build_part0.py`、`build_part1.py`、`build_part2.py`。修改这些文件后重新生成，避免下一次生成覆盖仅编辑过的输出文件。静态检查入口为：
+生成源位于 `tools/build_part0.py`、`build_part1.py`、`build_part2.py`、`build_part3.py`。修改这些文件后重新生成，避免下一次生成覆盖仅编辑过的输出文件。静态检查入口为：
 
 ```bash
 python3 notebooks/tools/check_notebooks.py

@@ -23,10 +23,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from prompt_toolkit import PromptSession
-from prompt_toolkit.history import InMemoryHistory
-from prompt_toolkit.key_binding import KeyBindings
-
 from . import llm
 
 # ---------------------------------------------------------------------------
@@ -382,6 +378,10 @@ def _make_ask_session() -> PromptSession:
     粘贴的多行内容会**整段**进入输入缓冲、不触发回车；用户粘贴/输入完按一次回车即提交。
     所以回车键设为「始终提交」——单行回答、多行粘贴，都是完成后按回车。
     """
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.history import InMemoryHistory
+    from prompt_toolkit.key_binding import KeyBindings
+
     bindings = KeyBindings()
 
     @bindings.add("enter")

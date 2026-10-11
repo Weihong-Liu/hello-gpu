@@ -68,7 +68,7 @@ def execute(target: Path, *, timeout=600):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("notebook", nargs="?", default="part0-intro/chapter4/chapter4.ipynb")
-    parser.add_argument("--part", choices=("part0-intro", "part1-profiling", "part2-kernels"))
+    parser.add_argument("--part", choices=("part0-intro", "part1-profiling", "part2-kernels", "part3-agent"))
     parser.add_argument("--timeout", type=int, default=600)
     args = parser.parse_args()
     if args.part:

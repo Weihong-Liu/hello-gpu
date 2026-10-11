@@ -36,6 +36,22 @@
     {
       "notebook": "part2-kernels/chapter8/chapter8.ipynb",
       "doc": "docs/part2-kernels/chapter8/index.md"
+    },
+    {
+      "notebook": "part3-agent/chapter14/chapter14.ipynb",
+      "doc": "docs/part3-agent/chapter14/index.md"
+    },
+    {
+      "notebook": "part3-agent/chapter15/chapter15.ipynb",
+      "doc": "docs/part3-agent/chapter15/index.md"
+    },
+    {
+      "notebook": "part3-agent/chapter16/chapter16.ipynb",
+      "doc": "docs/part3-agent/chapter16/index.md"
+    },
+    {
+      "notebook": "part3-agent/chapter17/chapter17.ipynb",
+      "doc": "docs/part3-agent/chapter17/index.md"
     }
   ]
 }
